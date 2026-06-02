@@ -1,0 +1,258 @@
+// =============================================================
+// LiquidParticle.compute
+// محاكاة جسيمات السائل باستخدام طريقة SPH
+// (Smoothed Particle Hydrodynamics)
+//
+// لماذا Compute Shader؟
+// ─────────────────────
+// محاكاة 256 جسيم يعني كل جسيم يتفاعل مع 255 جسيم آخر.
+// هذا 256×256 = 65,536 عملية حسابية في كل إطار.
+// على الـ CPU تتم بالتسلسل (واحدة تلو الأخرى).
+// على الـ GPU تتم بالتوازي (كل الجسيمات في نفس الوقت)
+// لأن البطاقة الرسومية تملك آلاف النوى المتوازية.
+// النتيجة: سرعة تصل إلى 100 مرة أسرع من الـ CPU.
+// =============================================================
+
+#pragma kernel CSComputeDensity    // النواة الأولى:  حساب كثافة كل جسيم
+#pragma kernel CSUpdateParticles   // النواة الثانية: تحديث القوى والمواقع
+
+// =============================================================
+// هيكل بيانات الجسيم (يجب أن يطابق struct في C# بالضبط = 32 byte)
+// =============================================================
+struct Particle
+{
+    float3 position;  // الموقع في الفضاء العالمي        (12 byte)
+    float3 velocity;  // السرعة                          (12 byte)
+    float  density;   // الكثافة المحلية المحسوبة بـ SPH  ( 4 byte)
+    float  pressure;  // الضغط المحسوب                   ( 4 byte)
+};
+
+// المخزن الرئيسي للجسيمات على الـ GPU (قراءة وكتابة)
+RWStructuredBuffer<Particle> _Particles;
+
+// =============================================================
+// المعاملات التي يُمررها C# كل إطار
+// (float4 بدلاً من float3 لتجنب مشكلة محاذاة الـ cbuffer في HLSL)
+// =============================================================
+int    _ParticleCount;      // عدد الجسيمات
+float  _DeltaTime;          // الخطوة الزمنية
+float  _ParticleMass;       // كتلة كل جسيم
+
+// معاملات SPH
+float  _SmoothingRadius;    // نصف قطر التأثير h
+float  _RestDensity;        // الكثافة في حالة السكون ρ₀
+float  _PressureConstant;   // معامل الضغط k
+float  _Viscosity;          // معامل اللزوجة μ
+float  _Damping;            // معامل التخامد (0.99 مثلاً)
+
+// معاملات الوعاء
+float4 _BowlCenter;         // مركز الوعاء في الفضاء العالمي
+float4 _BowlUp;             // محور Y المحلي للوعاء في الفضاء العالمي
+float4 _BowlRight;          // محور X المحلي للوعاء في الفضاء العالمي
+float4 _BowlForward;        // محور Z المحلي للوعاء في الفضاء العالمي
+float  _BowlRadius;         // نصف القطر الداخلي للوعاء
+float  _BowlBottomOffset;   // إزاحة القاع (قيمة سالبة مثل -0.25)
+
+// الفيزياء الخارجية
+float4 _Gravity;            // متجه الجاذبية (عادةً 0, -9.81, 0)
+float4 _BowlAcceleration;   // تسارع الوعاء - هذا ما يجعل السائل يتمايل!
+
+// =============================================================
+// نوى SPH الرياضية (Kernel Functions)
+// هي دوال تصف مدى تأثير جسيم على جسيم آخر بناءً على المسافة
+// =============================================================
+
+// Poly6: لحساب الكثافة - سلسة ولا تسبب قوى حادة
+float Poly6Kernel(float r2, float h)
+{
+    float h2 = h * h;
+    if (r2 >= h2) return 0.0;
+    float diff = h2 - r2;
+    // الصيغة الرياضية: W(r,h) = (315 / 64πh⁹) * (h²-r²)³
+    return (315.0 / (64.0 * 3.14159265359 * pow(h, 9.0))) * diff * diff * diff;
+}
+
+// Spiky Gradient: لحساب قوى الضغط - لها تدرج حاد يمنع تداخل الجسيمات
+float3 SpikyGradient(float3 rVec, float r, float h)
+{
+    if (r >= h || r < 0.00001) return float3(0, 0, 0);
+    float diff = h - r;
+    // الصيغة: ∇W(r,h) = (-45 / πh⁶) * (h-r)² * (r̂)
+    return (-45.0 / (3.14159265359 * pow(h, 6.0))) * diff * diff * (rVec / r);
+}
+
+// Viscosity Laplacian: لحساب قوى اللزوجة - تجعل السائل يتدفق بسلاسة
+float ViscosityLaplacian(float r, float h)
+{
+    if (r >= h) return 0.0;
+    // الصيغة: ∇²W(r,h) = (45 / πh⁶) * (h-r)
+    return (45.0 / (3.14159265359 * pow(h, 6.0))) * (h - r);
+}
+
+// =============================================================
+// النواة الأولى: حساب الكثافة والضغط
+// تُشغَّل أولاً قبل حساب القوى
+// =============================================================
+[numthreads(64, 1, 1)]
+void CSComputeDensity(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if ((int)i >= _ParticleCount) return;
+
+    float3 pos_i  = _Particles[i].position;
+    float  density = 0.0;
+
+    // كل جسيم i يجمع تأثيرات جميع الجسيمات j المحيطة به
+    for (int j = 0; j < _ParticleCount; j++)
+    {
+        float3 diff = pos_i - _Particles[j].position;
+        float  r2   = dot(diff, diff);
+
+        // Poly6: الجسيمات القريبة تزيد الكثافة أكثر
+        density += _ParticleMass * Poly6Kernel(r2, _SmoothingRadius);
+    }
+
+    _Particles[i].density = max(density, 0.0001); // لا صفر لتجنب قسمة على صفر لاحقاً
+
+    // معادلة حالة الغاز: P = k * (ρ - ρ₀)
+    // إذا الكثافة > الكثافة الطبيعية → ضغط موجب يدفع الجسيمات للخارج
+    // إذا الكثافة < الكثافة الطبيعية → ضغط سالب يشد الجسيمات للداخل
+    _Particles[i].pressure = _PressureConstant * (_Particles[i].density - _RestDensity);
+}
+
+// =============================================================
+// النواة الثانية: حساب القوى وتحديث الموقع والسرعة
+// =============================================================
+[numthreads(64, 1, 1)]
+void CSUpdateParticles(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if ((int)i >= _ParticleCount) return;
+
+    float3 pos_i      = _Particles[i].position;
+    float3 vel_i      = _Particles[i].velocity;
+    float  density_i  = _Particles[i].density;
+    float  pressure_i = _Particles[i].pressure;
+
+    float3 pressureForce  = float3(0, 0, 0);
+    float3 viscosityForce = float3(0, 0, 0);
+
+    // ─── حساب قوى التفاعل مع الجسيمات المجاورة ───
+    for (int j = 0; j < _ParticleCount; j++)
+    {
+        if ((uint)j == i) continue;
+
+        float3 rVec = pos_i - _Particles[j].position;
+        float  r    = length(rVec);
+
+        if (r >= _SmoothingRadius) continue; // خارج نطاق التأثير
+
+        float density_j  = max(_Particles[j].density,  0.0001);
+        float pressure_j = _Particles[j].pressure;
+
+        // قوة الضغط: الجسيمات المكتظة تدفع بعضها للخارج
+        // نستخدم متوسط الضغطين لضمان قانون نيوتن الثالث (الفعل ورد الفعل)
+        float avgPressure = (pressure_i + pressure_j) / (2.0 * density_j);
+        pressureForce -= _ParticleMass * avgPressure
+                         * SpikyGradient(rVec, r, _SmoothingRadius);
+
+        // قوة اللزوجة: الجسيمات السريعة تسحب الجسيمات البطيئة المجاورة
+        float3 velDiff = _Particles[j].velocity - vel_i;
+        viscosityForce += _ParticleMass * (velDiff / density_j)
+                          * ViscosityLaplacian(r, _SmoothingRadius);
+    }
+
+    // ─── إجمالي التسارع ───
+    // = جاذبية + ضغط + لزوجة + تأثير تحرك الوعاء
+    float3 accel = _Gravity.xyz;
+    accel += pressureForce  / max(density_i, 0.0001);
+    accel += viscosityForce * _Viscosity;
+
+    // السر الأهم: تسارع الوعاء يولد "قوة خيالية" على السائل
+    // عندما يتأرجح الوعاء بسرعة → السائل يتمايل باتجاه معاكس
+    // هذا يحاكي قانون نيوتن في الأطر غير الجامدة (Non-Inertial Frame)
+    accel -= _BowlAcceleration.xyz;
+
+    // ─── تكامل Euler: تحديث السرعة والموقع ───
+    float3 newVel = vel_i + accel * _DeltaTime;
+    newVel       *= _Damping; // تخامد لاستقرار المحاكاة العددية
+    float3 newPos = pos_i + newVel * _DeltaTime;
+
+    // ==========================================================
+    // قيد الجسيمات داخل الوعاء
+    // نحول الموقع إلى الإحداثيات المحلية للوعاء أولاً
+    // ==========================================================
+    float3 rel = newPos - _BowlCenter.xyz;
+
+    // إسقاط على المحاور المحلية للوعاء بضرب نقطي (Dot Product)
+    float lY = dot(rel, _BowlUp.xyz);      // الارتفاع في الوعاء
+    float lX = dot(rel, _BowlRight.xyz);   // الأفقي X
+    float lZ = dot(rel, _BowlForward.xyz); // الأفقي Z
+
+    // ─── 1. قيد القاع ───
+    if (lY < _BowlBottomOffset)
+    {
+        lY = _BowlBottomOffset;
+
+        // تحويل السرعة إلى local space وعكس مركبة Y
+        float3 vlLocal;
+        vlLocal.x = dot(newVel, _BowlRight.xyz);
+        vlLocal.y = dot(newVel, _BowlUp.xyz);
+        vlLocal.z = dot(newVel, _BowlForward.xyz);
+
+        vlLocal.y = abs(vlLocal.y) * 0.25; // ارتداد بسيط عند القاع
+
+        // تحويل السرعة مجدداً إلى world space
+        newVel = vlLocal.x * _BowlRight.xyz
+               + vlLocal.y * _BowlUp.xyz
+               + vlLocal.z * _BowlForward.xyz;
+    }
+
+    // ─── 2. قيد الجدران الجانبية ───
+    float2 xzPlane      = float2(lX, lZ);
+    float  distFromAxis = length(xzPlane);
+
+    if (distFromAxis > _BowlRadius)
+    {
+        // إعادة الجسيم إلى داخل الوعاء
+        float2 xzNorm = normalize(xzPlane);
+        lX = xzNorm.x * _BowlRadius;
+        lZ = xzNorm.y * _BowlRadius;
+
+        // تحويل السرعة إلى local space
+        float3 vlLocal;
+        vlLocal.x = dot(newVel, _BowlRight.xyz);
+        vlLocal.y = dot(newVel, _BowlUp.xyz);
+        vlLocal.z = dot(newVel, _BowlForward.xyz);
+
+        // حساب المركبة الشعاعية وعكسها (ارتداد عند الجدار)
+        float2 velXZ     = float2(vlLocal.x, vlLocal.z);
+        float  radialVel = dot(velXZ, xzNorm);
+
+        if (radialVel > 0.0) // فقط إذا كان يتجه للخارج
+        {
+            velXZ   -= xzNorm * radialVel * 1.4; // ارتداد مع امتصاص طاقة
+            velXZ   *= 0.4;
+            vlLocal.x = velXZ.x;
+            vlLocal.z = velXZ.y;
+        }
+
+        // تحويل السرعة مجدداً إلى world space
+        newVel = vlLocal.x * _BowlRight.xyz
+               + vlLocal.y * _BowlUp.xyz
+               + vlLocal.z * _BowlForward.xyz;
+    }
+
+    // إعادة بناء الموقع في الفضاء العالمي من الإحداثيات المحلية
+    newPos = _BowlCenter.xyz
+           + lX * _BowlRight.xyz
+           + lY * _BowlUp.xyz
+           + lZ * _BowlForward.xyz;
+
+    // حماية ضد الانفجار العددي (إذا تجاوزت السرعة حداً معقولاً)
+    float spd = length(newVel);
+    if (spd > 15.0) newVel = newVel * (15.0 / spd);
+
+    _Particles[i].position = newPos;
+    _Particles[i].velocity = newVel;
+}
