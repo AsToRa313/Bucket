@@ -1,0 +1,28 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ab38210c93c0b9644a81ab599a336334, type: 3}
+  m_Name: NewPendulumData
+  m_EditorClassIdentifier: Assembly-CSharp::PendulumData
+  totalMass: 0
+  currentPaintMass: 0
+  effectiveLength: 0
+  fillRatio: 0
+  currentPosition: {x: 0, y: 0, z: 0}
+  linearVelocity: {x: 0, y: 0, z: 0}
+  theta: 0
+  phi: 0
+  angularVelocityTheta: 0
+  angularVelocityPhi: 0
+  gravityVector: {x: 0, y: 0, z: 0}
+  airDamping: 0
+  effectiveGravity: 0
+  tangentialAcceleration: {x: 0, y: 0, z: 0}
