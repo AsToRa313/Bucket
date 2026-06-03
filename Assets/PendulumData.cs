@@ -24,4 +24,9 @@ public class PendulumData : ScriptableObject
     [Header("Outputs for Others (للمبرمج 2 و 3)")]
     public float effectiveGravity;    // الجاذبية الفعالة g_eff
     public Vector3 tangentialAcceleration; // التسارع المماسي
+
+    [Header("Fluid Dynamics Outputs (المبرمج 2 - )")]
+    public float fluidExitVelocity;   // سرعة خروج الطلاء الفعلية من الفتحة (تورشيللي الفعلية)
+    public float dynamicDrainRate;    // معدل تصريف الطلاء الفعلي (Q) المتأثر باللزوجة والانسداد
+    public float currentHoleRadius;   // نصف قطر الفتحة اللحظي (يتناقص مع محاكاة جفاف الحواف والانسداد)
 }

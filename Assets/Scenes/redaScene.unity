@@ -131,6 +131,7 @@ GameObject:
   - component: {fileID: 153996500}
   - component: {fileID: 153996501}
   - component: {fileID: 153996499}
+  - component: {fileID: 153996503}
   m_Layer: 0
   m_Name: BucketController
   m_TagString: Untagged
@@ -171,7 +172,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b7619128f3fee894bba511c376da31e9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SphericalPendulumMath
-  data: {fileID: 0}
+  data: {fileID: 11400000, guid: 4d07b09d888b5584bab4ebdd5e2b145e, type: 2}
   pivot: {fileID: 887371039}
   baseLength: 5
   gravity: 9.81
@@ -314,6 +315,22 @@ Transform:
   - {fileID: 577881108}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &153996503
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 153996498}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 888d3cd3f4ca43a46810c0f55d29be38, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PaintSpawner
+  paintDropPrefab: {fileID: 2324231557955294288, guid: 2f21fcc07551b9146830a7c17ad5b319, type: 3}
+  bucketPhysics: {fileID: 153996500}
+  fluidDynamics: {fileID: 887371042}
+  spawnRate: 0.05
 --- !u!1 &210654806
 GameObject:
   m_ObjectHideFlags: 0
@@ -588,6 +605,7 @@ GameObject:
   - component: {fileID: 887371039}
   - component: {fileID: 887371041}
   - component: {fileID: 887371040}
+  - component: {fileID: 887371042}
   m_Layer: 0
   m_Name: Pivot
   m_TagString: Untagged
@@ -667,6 +685,28 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 887371038}
   m_Mesh: {fileID: 10207, guid: 0000000000000000e000000000000000, type: 0}
+--- !u!114 &887371042
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 887371038}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 107053d66565ac14dbea3ca819b1a074, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Rema
+  sharedData: {fileID: 11400000, guid: 4d07b09d888b5584bab4ebdd5e2b145e, type: 2}
+  paintDensity: 1200
+  surfaceTension: 0.035
+  contactAngleDeg: 45
+  holeRadius: 0.005
+  Cv: 0.97
+  Cc: 0.62
+  dryingRate: 0.00001
+  actualFlowVelocity: 0
+  currentDrainRate: 0
 --- !u!1001 &1391460760
 PrefabInstance:
   m_ObjectHideFlags: 0
