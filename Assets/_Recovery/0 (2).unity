@@ -181,8 +181,8 @@ MonoBehaviour:
   shape: 0
   bucketHeight: 0.4
   emptyBucketMass: 0.5
-  maxPaintMass: 5
-  currentPaintMass: 5
+  maxPaintMass: 2
+  currentPaintMass: 2
   drainRate: 0.05
   torsionalStiffness: 0.8
   torsionalDamping: 0.05
@@ -330,9 +330,7 @@ MonoBehaviour:
   paintDropPrefab: {fileID: 2324231557955294288, guid: 2f21fcc07551b9146830a7c17ad5b319, type: 3}
   bucketPhysics: {fileID: 153996500}
   fluidDynamics: {fileID: 887371042}
-  holePoint: {fileID: 370068376}
   spawnRate: 0.05
-  paintConsumptionPerDrop: 0.001
 --- !u!1 &210654806
 GameObject:
   m_ObjectHideFlags: 0
@@ -363,37 +361,6 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &370068375
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 370068376}
-  m_Layer: 0
-  m_Name: HolePoint
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &370068376
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 370068375}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0.7071068, y: -0, z: -0, w: 0.7071068}
-  m_LocalPosition: {x: 0, y: 0, z: -0.02}
-  m_LocalScale: {x: 0.06666667, y: 0.06666665, z: 0.06666665}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 577881108}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &519420028
 GameObject:
@@ -795,10 +762,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
-    m_AddedGameObjects:
-    - targetCorrespondingSourceObject: {fileID: 5622086779891684357, guid: 5797d767d86099a4687632787f9be779, type: 3}
-      insertIndex: -1
-      addedObject: {fileID: 370068376}
+    m_AddedGameObjects: []
     m_AddedComponents: []
   m_SourcePrefab: {fileID: 100100000, guid: 5797d767d86099a4687632787f9be779, type: 3}
 --- !u!1 &1947888687

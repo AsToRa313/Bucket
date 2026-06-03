@@ -295,9 +295,14 @@ public class SphericalPendulumMath : MonoBehaviour
         data.currentPaintMass = currentPaintMass;
         data.effectiveLength = effectiveLength;
         data.fillRatio = maxPaintMass > 0 ? currentPaintMass / maxPaintMass : 0;
+
         data.theta = theta;
         data.phi = phi;
+
         data.angularVelocityTheta = thetaVelocity;
         data.angularVelocityPhi = phiVelocity;
+
+        data.linearVelocity = velocity;
+        data.currentPosition = transform.position;
     }
 }
