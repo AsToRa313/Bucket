@@ -1,0 +1,173 @@
+#pragma kernel ExternalForces
+#pragma kernel ComputeDensity
+#pragma kernel ComputePressure
+#pragma kernel UpdatePositions
+
+// =================== Data ===================
+
+struct Particle
+{
+    float3 position;
+    float3 velocity;
+    float2 density;
+    float _pad0;
+    float _pad1;
+};
+
+RWStructuredBuffer<Particle> Particles;
+
+uint  numParticles;
+float deltaTime;
+float gravity;
+float smoothingRadius;
+float targetDensity;
+float pressureMultiplier;
+float nearPressureMultiplier;
+float viscosityStrength;
+float collisionDamping;
+float3 bucketMin;
+float3 bucketMax;
+
+// =================== Kernels ===================
+
+static const float PI = 3.14159265;
+
+float Poly6(float dst, float h)
+{
+    if (dst >= h || dst < 0.0001) return 0;
+    float x = (h * h - dst * dst) / (h * h * h);
+    return x * x * x * (315.0 / (64.0 * PI));
+}
+
+float SpikyGrad(float dst, float h)
+{
+    if (dst >= h || dst < 0.0001) return 0;
+    float x = (h - dst) / (h * h * h);
+    return -x * x * (45.0 / PI);
+}
+
+// ---- Kernel 0: External Forces ----
+[numthreads(64,1,1)]
+void ExternalForces(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= numParticles) return;
+
+    // جاذبية فقط
+    Particles[i].velocity += float3(0, gravity, 0) * deltaTime;
+}
+
+// ---- Kernel 1: Density ----
+[numthreads(64,1,1)]
+void ComputeDensity(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= numParticles) return;
+
+    float density     = 0.001; // قيمة صغيرة لتجنب القسمة على صفر
+    float nearDensity = 0.001;
+
+    for (uint j = 0; j < numParticles; j++)
+    {
+        float3 diff = Particles[i].position - Particles[j].position;
+        float  dst  = length(diff);
+        density     += Poly6(dst, smoothingRadius);
+        if (dst < smoothingRadius)
+        {
+            float v = 1.0 - dst / smoothingRadius;
+            nearDensity += v * v;
+        }
+    }
+
+    Particles[i].density = float2(density, nearDensity);
+}
+
+// ---- Kernel 2: Pressure ----
+[numthreads(64,1,1)]
+void ComputePressure(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= numParticles) return;
+
+    float density    = max(Particles[i].density.x, 0.001);
+    float nearDensity= max(Particles[i].density.y, 0.001);
+    float pressure   = (density - targetDensity) * pressureMultiplier;
+    float nearP      = nearDensity * nearPressureMultiplier;
+
+    float3 force = float3(0,0,0);
+
+    for (uint j = 0; j < numParticles; j++)
+    {
+        if (i == j) continue;
+
+        float3 diff = Particles[i].position - Particles[j].position;
+        float  dst  = length(diff);
+
+        if (dst >= smoothingRadius || dst < 0.0001) continue;
+
+        float3 dir = diff / dst;
+
+        float jDensity = max(Particles[j].density.x, 0.001);
+        float jPressure= (jDensity - targetDensity) * pressureMultiplier;
+        float sharedP  = (pressure + jPressure) * 0.5;
+
+        // قوة الضغط
+        force += dir * SpikyGrad(dst, smoothingRadius)
+                 * sharedP / jDensity;
+
+        // لزوجة
+        force += (Particles[j].velocity - Particles[i].velocity)
+                 * Poly6(dst, smoothingRadius)
+                 * viscosityStrength;
+    }
+
+    // تحقق من NaN
+    if (any(isnan(force)) || any(isinf(force)))
+        force = float3(0,0,0);
+
+    Particles[i].velocity += force / density * deltaTime;
+
+    // clamp السرعة لتجنب الانفجار
+    float maxSpeed = 20.0;
+    float speed = length(Particles[i].velocity);
+    if (speed > maxSpeed)
+        Particles[i].velocity = Particles[i].velocity / speed * maxSpeed;
+}
+
+// ---- Kernel 3: Update Positions ----
+[numthreads(64,1,1)]
+void UpdatePositions(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= numParticles) return;
+
+    float3 vel = Particles[i].velocity;
+    float3 pos = Particles[i].position + vel * deltaTime;
+
+    // ارتداد عن جدران السطل
+    float3 center = (bucketMin + bucketMax) * 0.5;
+    float3 half   = (bucketMax - bucketMin) * 0.5 - smoothingRadius;
+
+    half = max(half, smoothingRadius); // تأكد ما بيصير سالب
+
+    float3 localPos = pos - center;
+
+    if (localPos.x < -half.x) { localPos.x = -half.x; vel.x *= -collisionDamping; }
+    if (localPos.x >  half.x) { localPos.x =  half.x; vel.x *= -collisionDamping; }
+    if (localPos.y < -half.y) { localPos.y = -half.y; vel.y *= -collisionDamping; }
+    if (localPos.y >  half.y) { localPos.y =  half.y; vel.y *= -collisionDamping; }
+    if (localPos.z < -half.z) { localPos.z = -half.z; vel.z *= -collisionDamping; }
+    if (localPos.z >  half.z) { localPos.z =  half.z; vel.z *= -collisionDamping; }
+
+    pos = center + localPos;
+
+    // تحقق من NaN
+    if (any(isnan(pos)) || any(isinf(pos)))
+    {
+        pos = center;
+        vel = float3(0,0,0);
+    }
+
+    Particles[i].position = pos;
+    Particles[i].velocity = vel;
+}
