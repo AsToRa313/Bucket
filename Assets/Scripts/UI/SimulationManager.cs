@@ -1,71 +1,70 @@
-using UnityEngine;
+// using UnityEngine;
 
-// المدير العام - يتحكم بكل شي
-public class SimulationManager : MonoBehaviour
-{
-    [Header("=== المراجع ===")]
-    public SphericalPendulumMath pendulum;
-    public FluidInBucket fluidInBucket;
-    public CanvasPainter canvasPainter;
+// public class SimulationManager : MonoBehaviour
+// {
+//     [Header("=== المراجع ===")]
+//     public SphericalPendulumMath pendulum;
+//     public CanvasPainter         canvasPainter;
+//     public PaintHoleSystem       holeSystem;
+//     public SPHSimulation         sphSimulation;
 
-    [Header("=== إعدادات الـ Prefab ===")]
-    public GameObject paintDripPrefab;
+//     void OnGUI()
+//     {
+//         GUILayout.BeginArea(new Rect(10, 10, 220, 350));
+//         GUILayout.Label("=== التحكم ===");
 
-    void Start()
-    {
-        // اشترك بحدث الدهان
-        if (fluidInBucket != null)
-        {
-            fluidInBucket.OnPaintDrip += SpawnPaintDrip;
-        }
-    }
+//         // ---- أزرار البندول ----
+//         if (GUILayout.Button("▶ ابدأ"))
+//             pendulum.enabled = true;
 
-    void SpawnPaintDrip(Vector3 position, Vector3 velocity, Color color)
-    {
-        if (paintDripPrefab == null) return;
+//         if (GUILayout.Button("⏸ وقّف"))
+//             pendulum.enabled = false;
 
-        GameObject drip = Instantiate(paintDripPrefab, position, Quaternion.identity);
-        var paintDrip = drip.GetComponent<PaintDrip>();
-        if (paintDrip != null)
-        {
-            paintDrip.Initialize(velocity, color, canvasPainter);
-        }
-    }
+//         GUILayout.Space(5);
 
-    // أزرار الواجهة
-    void OnGUI()
-{
-    GUILayout.BeginArea(new Rect(10, 10, 220, 300));
-    GUILayout.Label("=== التحكم ===");
+//         // ---- أزرار الثقوب ----
+//         if (holeSystem != null)
+//         {
+//             if (GUILayout.Button("🟢 افتح كل الثقوب"))
+//                 holeSystem.OpenAll();
 
-    if (GUILayout.Button("▶ ابدأ / استمر"))
-        pendulum.enabled = true;
+//             if (GUILayout.Button("🔴 أقفل كل الثقوب"))
+//                 holeSystem.CloseAll();
+//         }
 
-    if (GUILayout.Button("⏸ وقّف"))
-        pendulum.enabled = false;
+//         GUILayout.Space(5);
 
-    if (GUILayout.Button("💾 احفظ اللوحة"))
-        canvasPainter.SaveCanvas("my_painting");
+//         // ---- أزرار اللوحة ----
+//         if (GUILayout.Button("💾 احفظ اللوحة"))
+//             canvasPainter?.SaveCanvas("my_painting");
 
-    if (GUILayout.Button("🔄 امسح اللوحة"))
-        canvasPainter.ClearCanvas();
+//         if (GUILayout.Button("🔄 امسح اللوحة"))
+//             canvasPainter?.ClearCanvas();
 
-    GUILayout.Space(10);
-    if (pendulum.data != null)
-    {
-        GUILayout.Label($"كتلة الدهان: {pendulum.data.currentPaintMass:F2}");
-        GUILayout.Label($"theta: {pendulum.data.theta * Mathf.Rad2Deg:F1}°");
-        GUILayout.Label($"سرعة: {pendulum.GetBucketSpeed():F2} m/s");
-    }
+//         GUILayout.Space(10);
 
-    GUILayout.EndArea();
-}
+//         // ---- معلومات البندول ----
+//         if (pendulum != null)
+//         {
+//             GUILayout.Label($"سرعة السطل: {pendulum.GetBucketSpeed():F2} m/s");
 
-    void OnDestroy()
-    {
-        if (fluidInBucket != null)
-        {
-            fluidInBucket.OnPaintDrip -= SpawnPaintDrip;
-        }
-    }
-}
+//             if (pendulum.data != null)
+//             {
+//                 GUILayout.Label($"كتلة الدهان: {pendulum.data.currentPaintMass:F2}");
+//                 GUILayout.Label($"الزاوية: {pendulum.data.theta * Mathf.Rad2Deg:F1}°");
+//                 GUILayout.Label($"الامتلاء: {pendulum.data.fillRatio * 100f:F0}%");
+//             }
+//         }
+
+//         // ---- معلومات الثقوب ----
+//         if (holeSystem != null)
+//         {
+//             GUILayout.Space(5);
+//             float fill = holeSystem.GetFillRatio();
+//             GUILayout.Label($"الدهان المتبقي: {fill * 100f:F0}%");
+//             GUILayout.Label($"الثقوب المفتوحة: {holeSystem.CountOpenHoles()}");
+//         }
+
+//         GUILayout.EndArea();
+//     }
+// }

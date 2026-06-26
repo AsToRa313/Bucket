@@ -1,173 +1,304 @@
-#pragma kernel ExternalForces
-#pragma kernel ComputeDensity
-#pragma kernel ComputePressure
-#pragma kernel UpdatePositions
+#pragma kernel ExternalForces      // 0
+#pragma kernel UpdateSpatialHash   // 1
+#pragma kernel Reorder             // 2
+#pragma kernel ReorderCopyBack     // 3
+#pragma kernel CalculateDensities  // 4
+#pragma kernel CalculatePressureForce // 5
+#pragma kernel CalculateViscosity  // 6
+#pragma kernel UpdatePositions     // 7
 
-// =================== Data ===================
+#include "Assets/Shaders/FluidMaths3D.hlsl"
+#include "Assets/Shaders/SpatialHash3D.hlsl"
 
-struct Particle
+static const int ThreadGroupSize = 256;
+
+RWStructuredBuffer<float3> Positions;
+RWStructuredBuffer<float3> PredictedPositions;
+RWStructuredBuffer<float3> Velocities;
+RWStructuredBuffer<float2> Densities;
+
+RWStructuredBuffer<uint> SpatialKeys;
+RWStructuredBuffer<uint> SpatialOffsets;
+StructuredBuffer<uint>   SortedIndices;
+
+RWStructuredBuffer<float3> SortTarget_Positions;
+RWStructuredBuffer<float3> SortTarget_PredictedPositions;
+RWStructuredBuffer<float3> SortTarget_Velocities;
+
+const uint  numParticles;
+const float deltaTime;
+const float collisionDamping;
+const float velocityDamping;
+const float wallFriction;
+const float smoothingRadius;
+const float targetDensity;
+const float pressureMultiplier;
+const float nearPressureMultiplier;
+const float viscosityStrength;
+const int   openTop;
+
+const float3 bucketPos;
+const float3 bucketHalf;
+const float4 bucketRot;
+const float3 bucketScale;
+const float3 bucketVel;
+
+float3 RotateByQuat(float4 q, float3 v)
 {
-    float3 position;
-    float3 velocity;
-    float2 density;
-    float _pad0;
-    float _pad1;
-};
-
-RWStructuredBuffer<Particle> Particles;
-
-uint  numParticles;
-float deltaTime;
-float gravity;
-float smoothingRadius;
-float targetDensity;
-float pressureMultiplier;
-float nearPressureMultiplier;
-float viscosityStrength;
-float collisionDamping;
-float3 bucketMin;
-float3 bucketMax;
-
-// =================== Kernels ===================
-
-static const float PI = 3.14159265;
-
-float Poly6(float dst, float h)
-{
-    if (dst >= h || dst < 0.0001) return 0;
-    float x = (h * h - dst * dst) / (h * h * h);
-    return x * x * x * (315.0 / (64.0 * PI));
+    float3 u = q.xyz;
+    float  s = q.w;
+    return 2.0 * dot(u, v) * u
+         + (s*s - dot(u,u)) * v
+         + 2.0 * s * cross(u, v);
 }
 
-float SpikyGrad(float dst, float h)
+float3 InvRotateByQuat(float4 q, float3 v)
 {
-    if (dst >= h || dst < 0.0001) return 0;
-    float x = (h - dst) / (h * h * h);
-    return -x * x * (45.0 / PI);
+    float4 qInv = float4(-q.xyz, q.w);
+    return RotateByQuat(qInv, v);
 }
 
-// ---- Kernel 0: External Forces ----
-[numthreads(64,1,1)]
+void ResolveCollisions(inout float3 pos, inout float3 vel)
+{
+    float3 local = InvRotateByQuat(bucketRot, pos - bucketPos);
+    float3 h = bucketHalf;
+    float eps = smoothingRadius * 0.15;
+    float3 collisionNormal = float3(0, 0, 0);
+    bool collided = false;
+
+    if (local.x < -h.x) { local.x = -h.x + eps; collisionNormal.x =  1.0; collided = true; }
+    if (local.x >  h.x) { local.x =  h.x - eps; collisionNormal.x = -1.0; collided = true; }
+    if (local.z < -h.z) { local.z = -h.z + eps; collisionNormal.z =  1.0; collided = true; }
+    if (local.z >  h.z) { local.z =  h.z - eps; collisionNormal.z = -1.0; collided = true; }
+    if (local.y < -h.y) { local.y = -h.y + eps; collisionNormal.y =  1.0; collided = true; }
+    if (openTop == 0 && local.y > h.y) { local.y = h.y - eps; collisionNormal.y = -1.0; collided = true; }
+    if (openTop == 1 && local.y > h.y + smoothingRadius * 0.5)
+    {
+        local.y = h.y + smoothingRadius * 0.5;
+        collisionNormal.y = -1.0;
+        collided = true;
+    }
+
+    if (collided)
+    {
+        // حول السرعة للإطار المحلي للسطل
+        float3 velLocal = InvRotateByQuat(bucketRot, vel - bucketVel);
+        float3 n = normalize(collisionNormal);
+        float vn = dot(velLocal, n);
+        if (vn < 0.0)
+            velLocal -= (1.0 + collisionDamping) * vn * n;
+
+        velLocal.xz *= (1.0 - wallFriction);
+        
+        // رجع للإطار العالمي + أضف سرعة السطل
+        vel = RotateByQuat(bucketRot, velLocal) + bucketVel;
+        pos = RotateByQuat(bucketRot, local) + bucketPos;
+    }
+}
+
+// إذا هرب جزيء بعيداً — نرجعه للسطل
+void RecoverEscapedParticle(inout float3 pos, inout float3 vel)
+{
+    float3 local = InvRotateByQuat(bucketRot, pos - bucketPos);
+    float3 h = bucketHalf;
+    float margin = smoothingRadius * 0.5;
+
+    bool escaped =
+        local.x < -h.x - margin || local.x > h.x + margin ||
+        local.z < -h.z - margin || local.z > h.z + margin ||
+        local.y < -h.y - margin ||
+        (openTop == 0 && local.y > h.y + margin) ||
+        (openTop == 1 && local.y > h.y + margin * 4.0);
+
+    if (!escaped) return;
+
+    float eps = smoothingRadius * 0.5;
+    local.x = clamp(local.x, -h.x + eps, h.x - eps);
+    local.z = clamp(local.z, -h.z + eps, h.z - eps);
+    local.y = clamp(local.y, -h.y + eps, h.y - eps);
+
+    pos = RotateByQuat(bucketRot, local) + bucketPos;
+    vel = bucketVel;
+}
+
+float PressureFromDensity(float d)     { return max(0, (d - targetDensity) * pressureMultiplier); }
+float NearPressureFromDensity(float d) { return d * nearPressureMultiplier; }
+
+[numthreads(ThreadGroupSize,1,1)]
+
 void ExternalForces(uint3 id : SV_DispatchThreadID)
 {
-    uint i = id.x;
-    if (i >= numParticles) return;
+    if (id.x >= numParticles) return;
 
-    // جاذبية فقط
-    Particles[i].velocity += float3(0, gravity, 0) * deltaTime;
+    // جاذبية فقط — بدون bucketVel هون
+    float3 gravity = float3(0, -9.81, 0);
+    Velocities[id.x] += gravity * deltaTime;
+    
+    // predicted position بناءً على السرعة الحالية فقط
+    PredictedPositions[id.x] = Positions[id.x] + Velocities[id.x] * deltaTime;
 }
 
-// ---- Kernel 1: Density ----
-[numthreads(64,1,1)]
-void ComputeDensity(uint3 id : SV_DispatchThreadID)
+[numthreads(ThreadGroupSize,1,1)]
+void UpdateSpatialHash(uint3 id : SV_DispatchThreadID)
 {
-    uint i = id.x;
-    if (i >= numParticles) return;
+    if (id.x >= numParticles) return;
+    int3 cell = GetCell3D(PredictedPositions[id.x], smoothingRadius);
+    uint hash = HashCell3D(cell);
+    uint key  = KeyFromHash(hash, numParticles);
+    SpatialKeys[id.x] = key;
+}
 
-    float density     = 0.001; // قيمة صغيرة لتجنب القسمة على صفر
-    float nearDensity = 0.001;
+[numthreads(ThreadGroupSize,1,1)]
+void Reorder(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles) return;
+    uint si = SortedIndices[id.x];
+    SortTarget_Positions[id.x]          = Positions[si];
+    SortTarget_PredictedPositions[id.x] = PredictedPositions[si];
+    SortTarget_Velocities[id.x]         = Velocities[si];
+}
 
-    for (uint j = 0; j < numParticles; j++)
+[numthreads(ThreadGroupSize,1,1)]
+void ReorderCopyBack(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles) return;
+    Positions[id.x]          = SortTarget_Positions[id.x];
+    PredictedPositions[id.x] = SortTarget_PredictedPositions[id.x];
+    Velocities[id.x]         = SortTarget_Velocities[id.x];
+}
+
+[numthreads(ThreadGroupSize,1,1)]
+void CalculateDensities(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles) return;
+    float3 pos  = PredictedPositions[id.x];
+    int3   cell = GetCell3D(pos, smoothingRadius);
+    float  sqrR = smoothingRadius * smoothingRadius;
+    float  density = 0, nearDensity = 0;
+
+    for (int i = 0; i < 27; i++)
     {
-        float3 diff = Particles[i].position - Particles[j].position;
-        float  dst  = length(diff);
-        density     += Poly6(dst, smoothingRadius);
-        if (dst < smoothingRadius)
+        uint hash = HashCell3D(cell + offsets3D[i]);
+        uint key  = KeyFromHash(hash, numParticles);
+        uint curr = SpatialOffsets[key];
+        while (curr < numParticles)
         {
-            float v = 1.0 - dst / smoothingRadius;
-            nearDensity += v * v;
+            uint ni = curr++;
+            if (SpatialKeys[ni] != key) break;
+            float3 off  = PredictedPositions[ni] - pos;
+            float  sqrD = dot(off, off);
+            if (sqrD > sqrR) continue;
+            float dst = sqrt(sqrD);
+            density     += DensityKernel(dst, smoothingRadius);
+            nearDensity += NearDensityKernel(dst, smoothingRadius);
+        }
+    }
+    Densities[id.x] = float2(density, nearDensity);
+}
+
+[numthreads(ThreadGroupSize,1,1)]
+void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles) return;
+    float  density     = Densities[id.x].x;
+    float  nearDensity = Densities[id.x].y;
+    if (density < 0.001) return;
+
+    float  pressure     = PressureFromDensity(density);
+    float  nearPressure = NearPressureFromDensity(nearDensity);
+    float3 pos  = PredictedPositions[id.x];
+    int3   cell = GetCell3D(pos, smoothingRadius);
+    float  sqrR = smoothingRadius * smoothingRadius;
+    float3 force = 0;
+
+    for (int i = 0; i < 27; i++)
+    {
+        uint hash = HashCell3D(cell + offsets3D[i]);
+        uint key  = KeyFromHash(hash, numParticles);
+        uint curr = SpatialOffsets[key];
+        while (curr < numParticles)
+        {
+            uint ni = curr++;
+            if (ni == id.x) continue;
+            if (SpatialKeys[ni] != key) break;
+
+            float3 off  = PredictedPositions[ni] - pos;
+            float  sqrD = dot(off, off);
+            if (sqrD > sqrR) continue;
+
+            float  dst = max(sqrt(sqrD), smoothingRadius * 0.001);
+            float3 dir = off / dst;
+
+            float nDens = Densities[ni].x;
+            float nNear = Densities[ni].y;
+
+            float sharedP  = (pressure     + PressureFromDensity(nDens))     * 0.5;
+            float sharedNP = (nearPressure + NearPressureFromDensity(nNear)) * 0.5;
+
+            force += dir * DensityDerivative(dst, smoothingRadius)     * sharedP  / max(nDens,  1.0);
+            force += dir * NearDensityDerivative(dst, smoothingRadius) * sharedNP / max(nNear,  0.1);
         }
     }
 
-    Particles[i].density = float2(density, nearDensity);
+    Velocities[id.x] += (force / max(density, 1.0)) * deltaTime;
+    Velocities[id.x] *= velocityDamping;
 }
 
-// ---- Kernel 2: Pressure ----
-[numthreads(64,1,1)]
-void ComputePressure(uint3 id : SV_DispatchThreadID)
+[numthreads(ThreadGroupSize,1,1)]
+void CalculateViscosity(uint3 id : SV_DispatchThreadID)
 {
-    uint i = id.x;
-    if (i >= numParticles) return;
+    if (id.x >= numParticles) return;
+    float3 pos = PredictedPositions[id.x];
+    int3 cell = GetCell3D(pos, smoothingRadius);
+    float sqrR = smoothingRadius * smoothingRadius;
+    float3 vel = Velocities[id.x];
+    float3 viscForce = 0;
 
-    float density    = max(Particles[i].density.x, 0.001);
-    float nearDensity= max(Particles[i].density.y, 0.001);
-    float pressure   = (density - targetDensity) * pressureMultiplier;
-    float nearP      = nearDensity * nearPressureMultiplier;
-
-    float3 force = float3(0,0,0);
-
-    for (uint j = 0; j < numParticles; j++)
+    for (int i = 0; i < 27; i++)
     {
-        if (i == j) continue;
+        uint hash = HashCell3D(cell + offsets3D[i]);
+        uint key = KeyFromHash(hash, numParticles);
+        uint curr = SpatialOffsets[key];
+        while (curr < numParticles)
+        {
+            uint ni = curr++;
+            if (SpatialKeys[ni] != key) break;
+            if (ni == id.x) continue;
 
-        float3 diff = Particles[i].position - Particles[j].position;
-        float  dst  = length(diff);
+            float3 off = PredictedPositions[ni] - pos;
+            float sqrD = dot(off, off);
+            if (sqrD > sqrR) continue;
 
-        if (dst >= smoothingRadius || dst < 0.0001) continue;
-
-        float3 dir = diff / dst;
-
-        float jDensity = max(Particles[j].density.x, 0.001);
-        float jPressure= (jDensity - targetDensity) * pressureMultiplier;
-        float sharedP  = (pressure + jPressure) * 0.5;
-
-        // قوة الضغط
-        force += dir * SpikyGrad(dst, smoothingRadius)
-                 * sharedP / jDensity;
-
-        // لزوجة
-        force += (Particles[j].velocity - Particles[i].velocity)
-                 * Poly6(dst, smoothingRadius)
-                 * viscosityStrength;
+            float dst = sqrt(sqrD);
+            float weight = SmoothingKernelPoly6(dst, smoothingRadius);
+            viscForce += (Velocities[ni] - vel) * weight;
+        }
     }
 
-    // تحقق من NaN
-    if (any(isnan(force)) || any(isinf(force)))
-        force = float3(0,0,0);
-
-    Particles[i].velocity += force / density * deltaTime;
-
-    // clamp السرعة لتجنب الانفجار
-    float maxSpeed = 20.0;
-    float speed = length(Particles[i].velocity);
-    if (speed > maxSpeed)
-        Particles[i].velocity = Particles[i].velocity / speed * maxSpeed;
+    Velocities[id.x] += viscForce * viscosityStrength * deltaTime;
 }
 
-// ---- Kernel 3: Update Positions ----
-[numthreads(64,1,1)]
+[numthreads(ThreadGroupSize,1,1)]
 void UpdatePositions(uint3 id : SV_DispatchThreadID)
 {
-    uint i = id.x;
-    if (i >= numParticles) return;
+    if (id.x >= numParticles) return;
 
-    float3 vel = Particles[i].velocity;
-    float3 pos = Particles[i].position + vel * deltaTime;
+    float3 vel = Velocities[id.x];
 
-    // ارتداد عن جدران السطل
-    float3 center = (bucketMin + bucketMax) * 0.5;
-    float3 half   = (bucketMax - bucketMin) * 0.5 - smoothingRadius;
+    // تقييد السرعة
+    float maxVel = smoothingRadius * 20.0;
+    float velLen = length(vel);
+    if (velLen > maxVel)
+        vel = vel * (maxVel / velLen);
 
-    half = max(half, smoothingRadius); // تأكد ما بيصير سالب
+    // تحريك الجزيء — بدون bucketVel هون
+    float3 pos = Positions[id.x] + vel * deltaTime;
 
-    float3 localPos = pos - center;
+    ResolveCollisions(pos, vel);
+    ResolveCollisions(pos, vel);
+    ResolveCollisions(pos, vel);
+    RecoverEscapedParticle(pos, vel);
 
-    if (localPos.x < -half.x) { localPos.x = -half.x; vel.x *= -collisionDamping; }
-    if (localPos.x >  half.x) { localPos.x =  half.x; vel.x *= -collisionDamping; }
-    if (localPos.y < -half.y) { localPos.y = -half.y; vel.y *= -collisionDamping; }
-    if (localPos.y >  half.y) { localPos.y =  half.y; vel.y *= -collisionDamping; }
-    if (localPos.z < -half.z) { localPos.z = -half.z; vel.z *= -collisionDamping; }
-    if (localPos.z >  half.z) { localPos.z =  half.z; vel.z *= -collisionDamping; }
-
-    pos = center + localPos;
-
-    // تحقق من NaN
-    if (any(isnan(pos)) || any(isinf(pos)))
-    {
-        pos = center;
-        vel = float3(0,0,0);
-    }
-
-    Particles[i].position = pos;
-    Particles[i].velocity = vel;
+    Positions[id.x]  = pos;
+    Velocities[id.x] = vel;
 }

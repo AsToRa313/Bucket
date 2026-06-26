@@ -1,6 +1,6 @@
 using UnityEngine;
 
-public class SphericalPendulumMath : MonoBehaviour
+public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
 {
     public enum BucketShape { Cylindrical, Conical, Cubic }
 
@@ -50,8 +50,13 @@ public class SphericalPendulumMath : MonoBehaviour
     private LineRenderer ropeRenderer;
 
     // *** الدالة اللي بتحتاجها SPHSimulation ***
+
     public Vector3 GetBucketPosition() => transform.position;
     public float   GetBucketSpeed()    => velocity.magnitude;
+
+    // *** جديد — بتحتاجها PaintSpawner ***
+    public Vector3 GetVelocityVector() => velocity;
+    public float   GetFillRatio()      => currentPaintMass / maxPaintMass;
 
     // للتوافق مع SimulationManager القديم
     public bool isSimulating => !isDragging && velocity.magnitude > 0.01f;
@@ -297,4 +302,5 @@ public class SphericalPendulumMath : MonoBehaviour
         Gizmos.color = new Color(0, 1, 1, 0.3f);
         Gizmos.DrawWireSphere(transform.position, 0.3f);
     }
+    
 }

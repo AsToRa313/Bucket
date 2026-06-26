@@ -1,58 +1,67 @@
 using UnityEngine;
 
+/// <summary>
+/// رندر جزيئات SPH بـ GPU Instancing
+/// كل جزيء كرة صغيرة، لونها يتغير حسب السرعة
+/// </summary>
 public class SPHRenderer : MonoBehaviour
 {
-    [Header("=== المراجع ===")]
+    [Header("المراجع")]
     public SPHSimulation simulation;
 
-    [Header("=== شكل الجزيئات ===")]
-    public float particleSize  = 0.08f;
-    public Color particleColor = new Color(1f, 0.2f, 0.2f, 1f);
+    [Header("شكل الجزيئات")]
+    [Range(0.01f, 0.2f)]
+    public float particleSize = 0.05f;
 
-    Material mat;
-    Mesh     mesh;
-    ComputeBuffer argsBuffer;
-    uint[] args = new uint[5];
+    [Header("ألوان")]
+    public Color colorSlow   = new Color(0.1f, 0.4f, 0.9f, 1f); // أزرق = بطيء
+    public Color colorFast   = new Color(1.0f, 0.3f, 0.0f, 1f); // أحمر = سريع
+    public float speedScale  = 3f; // سرعة = maxSpeed لتغيير اللون
+
+    Material         mat;
+    Mesh             mesh;
+    ComputeBuffer    argsBuffer;
+    readonly uint[]  args = new uint[5];
 
     void Start()
     {
-        // تأكد إن الـ simulation جاهز
         if (simulation == null)
         {
-            Debug.LogError("❌ Simulation غير مربوط بالـ SPHRenderer!");
+            Debug.LogError("❌ SPHRenderer: simulation فارغ!");
             return;
         }
 
         var shader = Shader.Find("Custom/SPHParticle");
         if (shader == null)
         {
-            Debug.LogError("❌ ما لقيت الشيدر Custom/SPHParticle!");
+            Debug.LogError("❌ SPHRenderer: ما لقيت شيدر Custom/SPHParticle!");
             return;
         }
 
         mat  = new Material(shader);
-        mesh = GetSphereMesh();
+        mesh = BuildSphereMesh();
 
-        argsBuffer = new ComputeBuffer(
-            1, args.Length * sizeof(uint),
-            ComputeBufferType.IndirectArguments
-        );
+        argsBuffer = new ComputeBuffer(1, args.Length * sizeof(uint),
+                                       ComputeBufferType.IndirectArguments);
+        RefreshArgs();
+        Debug.Log("✅ SPHRenderer جاهز");
+    }
 
+    void RefreshArgs()
+    {
         args[0] = mesh.GetIndexCount(0);
         args[1] = (uint)simulation.GetParticleCount();
         args[2] = mesh.GetIndexStart(0);
         args[3] = (uint)mesh.GetBaseVertex(0);
         args[4] = 0;
         argsBuffer.SetData(args);
-
-        Debug.Log("✅ SPHRenderer جاهز");
     }
 
-    Mesh GetSphereMesh()
+    Mesh BuildSphereMesh()
     {
         var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         var m  = go.GetComponent<MeshFilter>().sharedMesh;
-        Destroy(go);
+        DestroyImmediate(go);
         return m;
     }
 
@@ -60,17 +69,16 @@ public class SPHRenderer : MonoBehaviour
     {
         if (mat == null || argsBuffer == null || simulation == null) return;
 
-        var buf = simulation.GetParticleBuffer();
-        if (buf == null) return;
-
-        // *** هاد هو الإصلاح — حدّث البفر كل فريم ***
-        mat.SetBuffer("_ParticleBuffer", buf);
+        mat.SetBuffer("_PositionBuffer", simulation.GetPositionBuffer());
+        mat.SetBuffer("_VelocityBuffer", simulation.GetVelocityBuffer());
         mat.SetFloat ("_Size",           particleSize);
-        mat.SetColor ("_Color",          particleColor);
+        mat.SetColor ("_ColorSlow",      colorSlow);
+        mat.SetColor ("_ColorFast",      colorFast);
+        mat.SetFloat ("_SpeedScale",     speedScale);
 
         Graphics.DrawMeshInstancedIndirect(
             mesh, 0, mat,
-            new Bounds(Vector3.zero, Vector3.one * 100f),
+            new Bounds(Vector3.zero, Vector3.one * 200f),
             argsBuffer
         );
     }

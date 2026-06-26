@@ -148,6 +148,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: cf083ffcffa32914ba7df73dee30ec83, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SPHRenderer
+  simulation: {fileID: 811034505}
+  particleSize: 0.005
+  particleColor: {r: 0.7411765, g: 0.054901965, b: 0.7411765, a: 1}
 --- !u!4 &215222761
 Transform:
   m_ObjectHideFlags: 0
@@ -248,13 +251,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 502229547}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 1, z: -3}
+  m_LocalRotation: {x: 0.003801683, y: 0.087072834, z: 0.043453418, w: 0.9952466}
+  m_LocalPosition: {x: 0, y: 2, z: -5}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 10, z: 5}
 --- !u!1 &811034499
 GameObject:
   m_ObjectHideFlags: 0
@@ -288,7 +291,8 @@ Transform:
   m_LocalPosition: {x: 0, y: -2, z: 0}
   m_LocalScale: {x: 0.5, y: 0.3, z: 0.5}
   m_ConstrainProportionsScale: 0
-  m_Children: []
+  m_Children:
+  - {fileID: 1315012017}
   m_Father: {fileID: 1088812488}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!136 &811034502
@@ -383,6 +387,18 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 5c40a1db45607194fa52e6d22444ca4f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SPHSimulation
+  numParticles: 3908
+  smoothingRadius: 0.08
+  targetDensity: 800
+  pressureMultiplier: 150
+  nearPressureMultiplier: 20
+  viscosityStrength: 0.3
+  collisionDamping: 0.599
+  timeScale: 0.4
+  stepsPerFrame: 2
+  sphCompute: {fileID: 7200000, guid: 262977e58df7d0541b544e4318880655, type: 3}
+  bucketPendulum: {fileID: 811034506}
+  paintHoleSystem: {fileID: 1315012018}
 --- !u!114 &811034506
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -421,6 +437,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 868334685}
+  - component: {fileID: 868334684}
   m_Layer: 0
   m_Name: SPH_Tester
   m_TagString: Untagged
@@ -428,6 +445,27 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
+--- !u!114 &868334684
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 868334683}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6b27e415b1381324da68c080d232cec2, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::DebugSPH
+  sph: {fileID: 811034505}
+  bucket: {fileID: 811034506}
+  holeSystem: {fileID: 1315012018}
+  canvasPainter: {fileID: 1616864327}
+  showParticles: 1
+  showBucket: 1
+  showHoles: 1
+  showCanvas: 1
+  logEveryNFrames: 60
 --- !u!4 &868334685
 Transform:
   m_ObjectHideFlags: 0
@@ -506,7 +544,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::SimulationManager
   pendulum: {fileID: 811034506}
   canvasPainter: {fileID: 1616864327}
-  holeSystem: {fileID: 0}
+  holeSystem: {fileID: 1315012018}
   sphSimulation: {fileID: 811034505}
 --- !u!4 &1306690873
 Transform:
@@ -523,6 +561,57 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1315012015
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1315012017}
+  - component: {fileID: 1315012018}
+  m_Layer: 0
+  m_Name: HoleSystem
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1315012017
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1315012015}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 811034500}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1315012018
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1315012015}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ec6674c10f9ba17428315ee119b31bce, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PaintHoleSystem
+  bucket: {fileID: 811034506}
+  canvasPainter: {fileID: 1616864327}
+  bucketHalfSize: {x: 0.2, y: 0.25, z: 0.2}
+  paintMassTotal: 2
+  paintMassLeft: 0
+  flowBoost: 2
+  holes: []
 --- !u!1 &1616864322
 GameObject:
   m_ObjectHideFlags: 0

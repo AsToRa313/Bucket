@@ -148,6 +148,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: cf083ffcffa32914ba7df73dee30ec83, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SPHRenderer
+  simulation: {fileID: 811034505}
+  particleSize: 0.05
+  particleColor: {r: 1, g: 0.2, b: 0.2, a: 0.8}
 --- !u!4 &215222761
 Transform:
   m_ObjectHideFlags: 0
@@ -249,7 +252,7 @@ Transform:
   m_GameObject: {fileID: 502229547}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 1, z: -3}
+  m_LocalPosition: {x: 0, y: 1, z: -5}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -383,6 +386,22 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 5c40a1db45607194fa52e6d22444ca4f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SPHSimulation
+  numParticles: 500
+  smoothingRadius: 0.2
+  targetDensity: 300
+  pressureMultiplier: 200
+  nearPressureMultiplier: 15
+  viscosityStrength: 0.1
+  collisionDamping: 0.7
+  timeScale: 1
+  stepsPerFrame: 3
+  sphCompute: {fileID: 7200000, guid: 262977e58df7d0541b544e4318880655, type: 3}
+  bucketPendulum: {fileID: 811034506}
+  holeOpen: 1
+  holeRadius: 0.05
+  canvasPainter: {fileID: 1616864327}
+  paintColor: {r: 1, g: 0, b: 0, a: 1}
+  paintSpawner: {fileID: 0}
 --- !u!114 &811034506
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -421,6 +440,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 868334685}
+  - component: {fileID: 868334684}
   m_Layer: 0
   m_Name: SPH_Tester
   m_TagString: Untagged
@@ -428,6 +448,20 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
+--- !u!114 &868334684
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 868334683}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6b27e415b1381324da68c080d232cec2, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::DebugSPH
+  sph: {fileID: 811034505}
+  bucket: {fileID: 0}
 --- !u!4 &868334685
 Transform:
   m_ObjectHideFlags: 0
@@ -505,9 +539,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SimulationManager
   pendulum: {fileID: 811034506}
+  fluidInBucket: {fileID: 0}
   canvasPainter: {fileID: 1616864327}
-  holeSystem: {fileID: 0}
-  sphSimulation: {fileID: 811034505}
+  paintDripPrefab: {fileID: 3110197828558081968, guid: 499333893e7abd845bd7965a32e6b896, type: 3}
 --- !u!4 &1306690873
 Transform:
   m_ObjectHideFlags: 0
