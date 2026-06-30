@@ -465,11 +465,11 @@ MonoBehaviour:
   vortexRange: 6
   vortexPull: 1
   vortexSpin: 8
-  useFixedColors: 1
-  canvas: {fileID: 1616864327}
+  useFixedColors: 0
+  canvas: {fileID: 0}
   canvasY: -1.5
   canvasHalfSize: {x: 1, y: 1}
-  paintColor: {r: 0.11311854, g: 0.16702335, b: 0.7735849, a: 1}
+  paintColor: {r: 0.8, g: 0.1, b: 0.1, a: 1}
   canvasCheckInterval: 2
 --- !u!114 &811034509
 MonoBehaviour:
@@ -742,9 +742,6 @@ MonoBehaviour:
   splashRadius: 0.05
   paintOpacity: 0.85
   velocityStretch: 2
-  canvasHalfSize: {x: 1, y: 1}
-  dryTime: 5
-  wetBuildup: 0.25
   sphSystem: {fileID: 811034507}
 --- !u!1 &1756815456
 GameObject:

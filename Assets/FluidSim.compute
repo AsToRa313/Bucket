@@ -1,0 +1,460 @@
+// ============================================================
+//  FluidSim.compute  —  النسخة 2 (صيغة Clavet النظيفة)
+//  محاكاة سوائل تفاعلية على GPU
+//  Double-Density Relaxation (Clavet et al. 2005)
+//
+//  ترتيب الاستدعاء كل خطوة:
+//    1. ApplyGravity        (جاذبية + قصور + حفظ الموقع السابق + تحريك)
+//    2. BuildSpatialHash    (clear → count → prefix → scatter)
+//    3. DoubleDensityRelax  (كثافة مزدوجة + إزاحة مواقع)
+//    4. ComputeVelocity     (السرعة = (الموقع - السابق)/dt) + حدود + لزوجة
+// ============================================================
+
+#pragma kernel ApplyGravity
+#pragma kernel ClearGrid
+#pragma kernel CountParticles
+#pragma kernel PrefixSumNaive
+#pragma kernel ScatterParticles
+#pragma kernel DoubleDensityRelax
+#pragma kernel ComputeVelocity
+#pragma kernel CheckHoles
+#pragma kernel ApplyVortex
+
+// ------------------------------------------------------------
+//  البفرز الرئيسية
+// ------------------------------------------------------------
+RWStructuredBuffer<float3> Positions; // المواقع الحالية
+RWStructuredBuffer<float3> PrevPositions; // المواقع قبل الخطوة (لحساب السرعة)
+RWStructuredBuffer<float3> Velocities; // السرعات
+RWStructuredBuffer<uint> States; // 0 = داخل السطل، 1 = قطرة حرة
+
+// الثقوب: كل ثقب = float4(موقع محلي xyz، نصف القطر w)
+StructuredBuffer<float4> Holes;
+const uint numHoles;
+
+// قوى الدوامة حول الثقوب
+const float vortexRange; // نطاق تأثير الدوامة حول الثقب (مضاعف لنصف القطر)
+const float vortexPull; // قوة الجذب الشعاعي نحو الثقب
+const float vortexSpin; // قوة الدوران (الالتفاف) حول محور الثقب
+
+// اللوحة: كشف وصول القطرات (للرسم)
+const float canvasY; // مستوى ارتفاع اللوحة بالعالم
+const float3 canvasCenter; // مركز اللوحة بالعالم
+const float2 canvasHalfSize; // نصف أبعاد اللوحة (X,Z)
+const uint canvasEnabled; // 1 = الكشف مفعّل
+
+// التجزئة المكانية
+RWStructuredBuffer<uint> CellCounts;
+RWStructuredBuffer<uint> CellStart;
+RWStructuredBuffer<uint> CellEnd;
+RWStructuredBuffer<uint> SortedIndices;
+RWStructuredBuffer<uint> ParticleCellIndex;
+
+// ------------------------------------------------------------
+//  الثوابت (من C#)
+// ------------------------------------------------------------
+const uint numParticles;
+const float deltaTime;
+const float gravity;
+const float smoothingRadius;
+
+// معاملات Clavet
+const float restDensity; // كثافة التوازن (طبيعية، ~10)
+const float stiffness; // صلابة الضغط (k)
+const float nearStiffness; // صلابة الضغط القريب (k_near)
+const float viscosityBeta; // لزوجة تربيعية
+const float viscositySigma; // لزوجة خطية
+const float velocityDamping; // تخميد السرعة (يمتص الدوامة)
+
+const float3 bucketCenter;
+const float4 bucketRotation;
+const float bucketRadius;
+const float bucketHeight;
+const float collisionDamping;
+const float wallRestitution; // معامل ارتداد الجدار (0=بلا ارتداد، صغير=تخميد)
+
+const float3 externalAccel;
+
+const uint gridResolution;
+const float gridCellSize;
+const float3 gridMin;
+
+// ============================================================
+//  مساعدات الكواتيرنيون
+// ============================================================
+float3 QuatRotate(float4 q, float3 v)
+{
+    float3 u = float3(q.x, q.y, q.z);
+    float s = q.w;
+    return 2.0 * dot(u, v) * u
+         + (s * s - dot(u, u)) * v
+         + 2.0 * s * cross(u, v);
+}
+float4 QuatInverse(float4 q)
+{
+    return float4(-q.x, -q.y, -q.z, q.w);
+}
+
+// ============================================================
+//  مساعدات الشبكة
+// ============================================================
+int3 CellCoord(float3 pos)
+{
+    return (int3) floor((pos - gridMin) / gridCellSize);
+}
+uint CellHash(int3 c)
+{
+    c = clamp(c, int3(0, 0, 0), int3(gridResolution - 1, gridResolution - 1, gridResolution - 1));
+    return (uint) (c.x + c.y * gridResolution + c.z * gridResolution * gridResolution);
+}
+
+// ============================================================
+//  1. الجاذبية + حفظ الموقع السابق + التحريك المبدئي
+//     (في صيغة Clavet نحرّك أولاً ثم نصحّح بالكثافة)
+// ============================================================
+[numthreads(256, 1, 1)]
+void ApplyGravity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    // الجسيم المستهلك أو المنتظر للرسم (>=2): مخبّأ ومتجمّد
+    if (States[id.x] >= 2)
+    {
+        Velocities[id.x] = float3(0, 0, 0);
+        return;
+    }
+
+    // القطرات الحرة: جاذبية فقط (لا تتأثر بحركة/قصور السطل)
+    // السائل داخل السطل: جاذبية + قصور حركة السطل
+    float3 accel = float3(0, -gravity, 0);
+    if (States[id.x] == 0)
+        accel += externalAccel;
+
+    Velocities[id.x] += accel * deltaTime;
+
+    // احفظ الموقع الحالي ثم حرّك بالسرعة (predict)
+    PrevPositions[id.x] = Positions[id.x];
+    Positions[id.x] += Velocities[id.x] * deltaTime;
+}
+
+// ============================================================
+//  2. التجزئة المكانية (counting sort)
+// ============================================================
+[numthreads(256, 1, 1)]
+void ClearGrid(uint3 id : SV_DispatchThreadID)
+{
+    uint numCells = gridResolution * gridResolution * gridResolution;
+    if (id.x >= numCells)
+        return;
+    CellCounts[id.x] = 0;
+}
+
+[numthreads(256, 1, 1)]
+void CountParticles(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    uint cell = CellHash(CellCoord(Positions[id.x]));
+    ParticleCellIndex[id.x] = cell;
+    InterlockedAdd(CellCounts[cell], 1);
+}
+
+[numthreads(1, 1, 1)]
+void PrefixSumNaive(uint3 id : SV_DispatchThreadID)
+{
+    uint numCells = gridResolution * gridResolution * gridResolution;
+    uint sum = 0;
+    for (uint i = 0; i < numCells; i++)
+    {
+        CellStart[i] = sum;
+        sum += CellCounts[i];
+        CellEnd[i] = sum;
+        CellCounts[i] = CellStart[i];
+    }
+}
+
+[numthreads(256, 1, 1)]
+void ScatterParticles(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    uint cell = ParticleCellIndex[id.x];
+    uint dst;
+    InterlockedAdd(CellCounts[cell], 1, dst);
+    SortedIndices[dst] = id.x;
+}
+
+// ============================================================
+//  3. Double-Density Relaxation (قلب صيغة Clavet)
+//     لكل جسيم: احسب الكثافة والكثافة القريبة، ثم الضغطين،
+//     ثم أزح الجيران والجسيم نفسه مباشرةً (تصحيح موقع).
+// ============================================================
+[numthreads(256, 1, 1)]
+void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    if (States[id.x] == 1)
+        return; // القطرات الحرة لا تشارك في ضغط السائل
+
+    float3 pos = Positions[id.x];
+    int3 baseCell = CellCoord(pos);
+    float h = smoothingRadius;
+
+    float density = 0;
+    float nearDensity = 0;
+
+    // --- تمريرة 1: الكثافة ---
+    for (int ox = -1; ox <= 1; ox++)
+        for (int oy = -1; oy <= 1; oy++)
+            for (int oz = -1; oz <= 1; oz++)
+            {
+                int3 c = baseCell + int3(ox, oy, oz);
+                if (any(c < 0) || any(c >= (int) gridResolution))
+                    continue;
+                uint cell = CellHash(c);
+                uint start = CellStart[cell];
+                uint end = CellEnd[cell];
+
+                for (uint k = start; k < end; k++)
+                {
+                    uint j = SortedIndices[k];
+                    if (j == id.x)
+                        continue;
+                    if (States[j] == 1)
+                        continue; // تجاهل القطرات الحرة كجيران
+                    float3 diff = Positions[j] - pos;
+                    float r = length(diff);
+                    if (r < h && r > 0)
+                    {
+                        float q = 1.0 - r / h;
+                        density += q * q;
+                        nearDensity += q * q * q;
+                    }
+                }
+            }
+
+    // --- الضغطان ---
+    float pressure = stiffness * (density - restDensity);
+    float nearPressure = nearStiffness * nearDensity;
+
+    // --- تمريرة 2: الإزاحات ---
+    float3 dispSelf = 0;
+    for (int ox2 = -1; ox2 <= 1; ox2++)
+        for (int oy2 = -1; oy2 <= 1; oy2++)
+            for (int oz2 = -1; oz2 <= 1; oz2++)
+            {
+                int3 c = baseCell + int3(ox2, oy2, oz2);
+                if (any(c < 0) || any(c >= (int) gridResolution))
+                    continue;
+                uint cell = CellHash(c);
+                uint start = CellStart[cell];
+                uint end = CellEnd[cell];
+
+                for (uint k = start; k < end; k++)
+                {
+                    uint j = SortedIndices[k];
+                    if (j == id.x)
+                        continue;
+                    if (States[j] == 1)
+                        continue; // لا إزاحة من/نحو القطرات الحرة
+                    float3 diff = Positions[j] - pos;
+                    float r = length(diff);
+                    if (r < h && r > 0)
+                    {
+                        float q = 1.0 - r / h;
+                        float3 dir = diff / r;
+                        float mag = (pressure * q + nearPressure * q * q)
+                            * deltaTime * deltaTime * 0.5;
+                        dispSelf -= dir * mag;
+                    }
+                }
+            }
+
+    Positions[id.x] = pos + dispSelf;
+}
+
+// ============================================================
+//  4. حساب السرعة من تغيّر الموقع + حدود السطل
+// ============================================================
+[numthreads(256, 1, 1)]
+void ComputeVelocity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    // المستهلكة/المنتظرة الرسم: مخبّأة ومتجمّدة
+    if (States[id.x] >= 2)
+    {
+        Velocities[id.x] = float3(0, 0, 0);
+        Positions[id.x] = float3(9999, 9999, 9999);
+        return;
+    }
+
+    // السرعة = (الموقع الجديد - السابق) / dt  (يلتقط تصحيح الكثافة)
+    float3 newPos = Positions[id.x];
+    if (deltaTime > 0)
+        Velocities[id.x] = (newPos - PrevPositions[id.x]) / deltaTime;
+
+    // تخميد بسيط: يمتص الحركة الزائدة (بما فيها الدوامة المصطنعة)
+    Velocities[id.x] *= velocityDamping;
+
+    // القطرات الحرة: فحص وصول اللوحة + تسقط بحرية بلا حدود سطل
+    if (States[id.x] == 1)
+    {
+        // وصلت لمستوى اللوحة وداخل حدودها؟ => علّمها "تنتظر الرسم" (3)
+        if (canvasEnabled == 1 && newPos.y <= canvasY)
+        {
+            float dx = abs(newPos.x - canvasCenter.x);
+            float dz = abs(newPos.z - canvasCenter.z);
+            if (dx <= canvasHalfSize.x && dz <= canvasHalfSize.y)
+            {
+                States[id.x] = 3; // وصلت اللوحة، المدير سيرسمها
+            }
+        }
+        return;
+    }
+
+    // --- حدود السطل (أسطوانة، مفتوحة من الأعلى) ---
+    float4 invRot = QuatInverse(bucketRotation);
+    float3 local = QuatRotate(invRot, newPos - bucketCenter);
+    float3 localVel = QuatRotate(invRot, Velocities[id.x]);
+
+    float bottomY = -bucketHeight * 0.5;
+    bool changed = false;
+
+    // القاع فقط (لا سقف — السطل مفتوح من فوق)
+    if (local.y < bottomY)
+    {
+        local.y = bottomY;
+        // ارتداد مخمّد: السرعة العمودية تنعكس مضروبة بمعامل صغير (<1)
+        localVel.y = abs(localVel.y) * wallRestitution;
+        changed = true;
+    }
+    float2 xz = float2(local.x, local.z);
+    float radial = length(xz);
+    if (radial > bucketRadius)
+    {
+        float2 n = xz / radial;
+        local.x = n.x * bucketRadius;
+        local.z = n.y * bucketRadius;
+        float2 vxz = float2(localVel.x, localVel.z);
+        float vn = dot(vxz, n);
+        if (vn > 0)
+        {
+            // أزِل المركّبة المتجهة للخارج وأضف ارتداداً مخمّداً فقط
+            // (1 + restitution) حيث restitution صغير => لا تضخيم
+            vxz -= n * vn * (1.0 + wallRestitution);
+            localVel.x = vxz.x;
+            localVel.z = vxz.y;
+        }
+        changed = true;
+    }
+
+    if (changed)
+    {
+        Positions[id.x] = bucketCenter + QuatRotate(bucketRotation, local);
+        Velocities[id.x] = QuatRotate(bucketRotation, localVel);
+    }
+}
+
+// ============================================================
+//  5. فحص الثقوب: تحويل الجزيئات القريبة من ثقب إلى قطرات حرة
+// ============================================================
+[numthreads(256, 1, 1)]
+void CheckHoles(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    if (States[id.x] == 1)
+        return; // أصلاً حرة
+
+    // موقع الجسيم بإحداثيات السطل المحلية
+    float4 invRot = QuatInverse(bucketRotation);
+    float3 local = QuatRotate(invRot, Positions[id.x] - bucketCenter);
+
+    float topY = bucketHeight * 0.5;
+
+    // (1) خروج من الفوهة العلوية: لو الجسيم تجاوز الحافة العلوية
+    //     بهامش بسيط => انسكب => يصير قطرة حرة
+    if (local.y > topY + smoothingRadius)
+    {
+        States[id.x] = 1;
+        // يحتفظ بسرعته الحالية (الانسكاب الطبيعي) لكن نتركها كما هي
+        return;
+    }
+
+    // (2) خروج من الثقوب
+    for (uint hi = 0; hi < numHoles; hi++)
+    {
+        float4 hole = Holes[hi]; // xyz = موقع محلي، w = نصف القطر
+        float3 holePos = hole.xyz;
+        float holeR = hole.w;
+
+        float d = length(local - holePos);
+        if (d < holeR)
+        {
+            // الجسيم دخل منطقة الثقب => يصير قطرة حرة
+            States[id.x] = 1;
+            // أعطه سرعة سقوط نظيفة (يتخلّص من سرعة تأرجح السطل الموروثة)
+            Velocities[id.x] = float3(0, -0.5, 0);
+            return;
+        }
+    }
+}
+
+// ============================================================
+//  6. دوامة التصريف: جذب + التفاف حول الثقوب
+//     السائل القريب من ثقب ينجذب له ويلتفّ حوله (whirlpool)
+// ============================================================
+[numthreads(256, 1, 1)]
+void ApplyVortex(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    if (States[id.x] == 1)
+        return; // القطرات الحرة لا تتأثر
+
+    float4 invRot = QuatInverse(bucketRotation);
+    float3 local = QuatRotate(invRot, Positions[id.x] - bucketCenter);
+    float3 localVel = QuatRotate(invRot, Velocities[id.x]);
+
+    bool affected = false;
+
+    for (uint hi = 0; hi < numHoles; hi++)
+    {
+        float4 hole = Holes[hi];
+        float3 holePos = hole.xyz;
+        float holeR = hole.w;
+        float range = holeR * vortexRange;
+
+        float3 toHole = holePos - local;
+        float dist = length(toHole);
+
+        if (dist < range && dist > 0.0001)
+        {
+            // محور الدوامة = اتجاه الثقب من المركز (نورمال الثقب)
+            float3 axis = normalize(holePos);
+            if (length(holePos) < 0.0001)
+                axis = float3(0, 1, 0);
+
+            float3 radialDir = toHole / dist; // نحو الثقب
+            // عامل القوة: يزداد كلما اقترب (1 عند الثقب، 0 عند الحافة)
+            float strength = 1.0 - (dist / range);
+            strength = strength * strength; // تركيز أقوى قرب المركز
+
+            // 1) جذب شعاعي نحو الثقب
+            localVel += radialDir * vortexPull * strength * deltaTime;
+
+            // 2) قوة دورانية: عمودية على (المحور، الاتجاه الشعاعي)
+            float3 tangent = cross(axis, radialDir);
+            localVel += tangent * vortexSpin * strength * deltaTime;
+
+            affected = true;
+        }
+    }
+
+    if (affected)
+        Velocities[id.x] = QuatRotate(bucketRotation, localVel);
+}

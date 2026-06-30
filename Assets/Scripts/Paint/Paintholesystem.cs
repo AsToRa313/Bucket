@@ -172,7 +172,7 @@ public class PaintHoleSystem : MonoBehaviour
             if (hole.side != PaintHole.HoleSide.Bottom)
                 dotSize *= 1.5f;
 
-            canvasPainter.Paint(hit.textureCoord, hole.paintColor, dotSize);
+            canvasPainter.Splat(hit.point, Vector3.down * bucket.GetBucketSpeed(), hole.paintColor);
         }
     }
 

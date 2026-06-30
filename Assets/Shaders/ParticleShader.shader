@@ -19,12 +19,14 @@ Shader "Custom/SPHParticle"
 
             StructuredBuffer<float3> _PositionBuffer;
             StructuredBuffer<float3> _VelocityBuffer;
-            
+            StructuredBuffer<float4> _ColorBuffer;   // ألوان ثابتة (لكشف الدوران)
+
             // الأسماء متل ما عم تبعتيها من الكود 14 تماماً
             float4 _ColorSlow;
             float4 _ColorFast;
             float  _SpeedScale;
             float  _Size;
+            float  _UseFixedColor;   // 0 = حسب السرعة، 1 = ألوان ثابتة
 
             struct appdata 
             { 
@@ -53,9 +55,16 @@ Shader "Custom/SPHParticle"
                 float3 worldPos = center + v.vertex.xyz * _Size;
                 o.pos = mul(UNITY_MATRIX_VP, float4(worldPos, 1));
                 
-                // حساب الليرب بين الأزرق والأحمر حسب السرعة اللي باعتيتّها
-                float speed = saturate(length(vel) / max(0.001, _SpeedScale));
-                o.color = lerp(_ColorSlow, _ColorFast, speed);
+                // اللون: إما حسب السرعة أو لون ثابت (لكشف الدوران)
+                if (_UseFixedColor > 0.5)
+                {
+                    o.color = _ColorBuffer[index];
+                }
+                else
+                {
+                    float speed = saturate(length(vel) / max(0.001, _SpeedScale));
+                    o.color = lerp(_ColorSlow, _ColorFast, speed);
+                }
                 
                 return o;
             }

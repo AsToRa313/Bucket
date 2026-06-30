@@ -7,21 +7,21 @@ using UnityEngine;
 public class SPHRenderer : MonoBehaviour
 {
     [Header("المراجع")]
-    public SPHSimulation simulation;
+    public SPHSimulation1 simulation;
 
     [Header("شكل الجزيئات")]
     [Range(0.01f, 0.2f)]
     public float particleSize = 0.05f;
 
     [Header("ألوان")]
-    public Color colorSlow   = new Color(0.1f, 0.4f, 0.9f, 1f); // أزرق = بطيء
-    public Color colorFast   = new Color(1.0f, 0.3f, 0.0f, 1f); // أحمر = سريع
-    public float speedScale  = 3f; // سرعة = maxSpeed لتغيير اللون
+    public Color colorSlow = new Color(0.1f, 0.4f, 0.9f, 1f); // أزرق = بطيء
+    public Color colorFast = new Color(1.0f, 0.3f, 0.0f, 1f); // أحمر = سريع
+    public float speedScale = 3f; // سرعة = maxSpeed لتغيير اللون
 
-    Material         mat;
-    Mesh             mesh;
-    ComputeBuffer    argsBuffer;
-    readonly uint[]  args = new uint[5];
+    Material mat;
+    Mesh mesh;
+    ComputeBuffer argsBuffer;
+    readonly uint[] args = new uint[5];
 
     void Start()
     {
@@ -38,7 +38,7 @@ public class SPHRenderer : MonoBehaviour
             return;
         }
 
-        mat  = new Material(shader);
+        mat = new Material(shader);
         mesh = BuildSphereMesh();
 
         argsBuffer = new ComputeBuffer(1, args.Length * sizeof(uint),
@@ -60,7 +60,7 @@ public class SPHRenderer : MonoBehaviour
     Mesh BuildSphereMesh()
     {
         var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        var m  = go.GetComponent<MeshFilter>().sharedMesh;
+        var m = go.GetComponent<MeshFilter>().sharedMesh;
         DestroyImmediate(go);
         return m;
     }
@@ -71,10 +71,12 @@ public class SPHRenderer : MonoBehaviour
 
         mat.SetBuffer("_PositionBuffer", simulation.GetPositionBuffer());
         mat.SetBuffer("_VelocityBuffer", simulation.GetVelocityBuffer());
-        mat.SetFloat ("_Size",           particleSize);
-        mat.SetColor ("_ColorSlow",      colorSlow);
-        mat.SetColor ("_ColorFast",      colorFast);
-        mat.SetFloat ("_SpeedScale",     speedScale);
+        mat.SetBuffer("_ColorBuffer", simulation.GetColorBuffer());
+        mat.SetFloat("_UseFixedColor", simulation.UseFixedColors() ? 1f : 0f);
+        mat.SetFloat("_Size", particleSize);
+        mat.SetColor("_ColorSlow", colorSlow);
+        mat.SetColor("_ColorFast", colorFast);
+        mat.SetFloat("_SpeedScale", speedScale);
 
         Graphics.DrawMeshInstancedIndirect(
             mesh, 0, mat,
