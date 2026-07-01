@@ -16,6 +16,8 @@ public class SPHRenderer : MonoBehaviour
     [Header("ألوان")]
     public Color colorSlow = new Color(0.1f, 0.4f, 0.9f, 1f); // أزرق = بطيء
     public Color colorFast = new Color(1.0f, 0.3f, 0.0f, 1f); // أحمر = سريع
+    [Tooltip("استخدم لون الدهان الموحّد من SPHSimulation بدل تدرّج السرعة")]
+    public bool useUnifiedColor = true;
     public float speedScale = 3f; // سرعة = maxSpeed لتغيير اللون
 
     Material mat;
@@ -72,10 +74,24 @@ public class SPHRenderer : MonoBehaviour
         mat.SetBuffer("_PositionBuffer", simulation.GetPositionBuffer());
         mat.SetBuffer("_VelocityBuffer", simulation.GetVelocityBuffer());
         mat.SetBuffer("_ColorBuffer", simulation.GetColorBuffer());
-        mat.SetFloat("_UseFixedColor", simulation.UseFixedColors() ? 1f : 0f);
         mat.SetFloat("_Size", particleSize);
-        mat.SetColor("_ColorSlow", colorSlow);
-        mat.SetColor("_ColorFast", colorFast);
+
+        // منطق الألوان:
+        // - useUnifiedColor: كل جسيم يعرض لونه الفعلي من colorBuffer
+        //   (يدعم ألوان متعددة - لون الدهان وقت خروج كل جسيم)
+        // - useFixedColors (تشخيص): قوس قزح من colorBuffer
+        // كلاهما يقرأ colorBuffer، فنفعّل _UseFixedColor في الحالتين
+        Color cSlow = colorSlow;
+        Color cFast = colorFast;
+        float useBuffer = 0f;
+        if (useUnifiedColor || simulation.UseFixedColors())
+        {
+            // اقرأ اللون الفعلي لكل جسيم من الـ buffer
+            useBuffer = 1f;
+        }
+        mat.SetFloat("_UseFixedColor", useBuffer);
+        mat.SetColor("_ColorSlow", cSlow);
+        mat.SetColor("_ColorFast", cFast);
         mat.SetFloat("_SpeedScale", speedScale);
 
         Graphics.DrawMeshInstancedIndirect(

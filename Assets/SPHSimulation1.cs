@@ -78,12 +78,36 @@ public class SPHSimulation1 : MonoBehaviour
     [Header("Canvas Painting (الرسم على اللوحة)")]
     [Tooltip("اللوحة التي ترسم عليها القطرات الساقطة")]
     public CanvasPainter canvas;
-    [Tooltip("مستوى ارتفاع اللوحة (Y بالعالم) - القطرة ترسم لما تنزل تحته")]
+    [Tooltip("احسب مستوى اللوحة تلقائياً من موقعها (مستحسن - يمنع الرسم تحت اللوحة)")]
+    public bool autoCanvasY = true;
+    [Tooltip("احسب حجم اللوحة تلقائياً (للـ Unity Plane: نصف الحجم = 5×scale)")]
+    public bool autoCanvasSize = true;
+    [Tooltip("إزاحة فوق سطح اللوحة (لالتقاط القطرة عند اللمس مباشرة)")]
+    public float canvasSurfaceOffset = 0.02f;
+    [Tooltip("مستوى ارتفاع اللوحة (Y بالعالم) - يُحسب تلقائياً لو autoCanvasY مفعّل")]
     public float canvasY = -1.5f;
     [Tooltip("نصف حجم اللوحة أفقياً (X,Z) لفحص دخول القطرة")]
     public Vector2 canvasHalfSize = new Vector2(1f, 1f);
     [Tooltip("لون الطلاء على اللوحة")]
     public Color paintColor = new Color(0.8f, 0.1f, 0.1f, 1f);
+    [Tooltip("نصف قطر البقعة بالمتر (بحجم القطرة)")]
+    public float canvasSplatRadius = 0.03f;
+    [Range(0f, 1f)]
+    [Tooltip("شفافية الطلاء (1=صلب)")]
+    public float canvasPaintOpacity = 0.6f;
+    [Tooltip("قلب المحور الأفقي للرسم (لو الرسم معكوس يمين/يسار)")]
+    public bool canvasFlipU = false;
+    [Tooltip("قلب المحور العمودي للرسم (لو الرسم معكوس فوق/تحت)")]
+    public bool canvasFlipV = false;
+    [Tooltip("توسّع البقعة عند تراكم الدهان فوق بعضه")]
+    public bool enablePoolGrowth = true;
+    [Tooltip("قوة نمو البقعة عند التشبّع (1=حتى الضعف)")]
+    public float poolGrowth = 1.5f;
+    [Tooltip("خلط الألوان عند نزول لون فوق لون مختلف (رطب)")]
+    public bool enableWetMix = true;
+    [Range(0f, 1f)]
+    [Tooltip("قوة الخلط الطرحي (0=متوسط بسيط، 1=طرحي مثل الدهان)")]
+    public float wetMixStrength = 0.5f;
     [Tooltip("كل كم فريم نفحص القطرات الساقطة (أعلى = أداء أفضل)")]
     public int canvasCheckInterval = 2;
 
@@ -93,6 +117,8 @@ public class SPHSimulation1 : MonoBehaviour
     ComputeBuffer stateBuffer;
     ComputeBuffer holeBuffer;
     ComputeBuffer colorBuffer;
+    ComputeBuffer splatPointsBuffer;   // مواقع القطرات الواصلة (append)
+    ComputeBuffer splatCountBuffer;    // عدّاد القطرات الواصلة
 
     ComputeBuffer cellCountsBuffer;
     ComputeBuffer cellStartBuffer;
@@ -103,15 +129,13 @@ public class SPHSimulation1 : MonoBehaviour
     int gridResolution, numCells;
     Vector3 gridMin;
 
-    int kGravity, kClearGrid, kCount, kPrefix, kScatter, kRelax, kVelocity, kCheckHoles, kVortex;
+    int kGravity, kClearGrid, kCount, kPrefix, kScatter, kRelax, kVelocity, kCheckHoles, kVortex, kPaintCanvas;
     const int THREADS = 256;
+
+    RenderTexture canvasRT;   // تكستشر اللوحة القابل للكتابة من GPU
+    ComputeBuffer canvasAccumBuffer;   // تراكم الدهان لكل بكسل
     Vector3 prevBucketVel = Vector3.zero;
     bool ready = false;
-
-    // مصفوفات قراءة القطرات للوحة (تُعاد استخدامها)
-    Vector3[] readPositions;
-    Vector3[] readVelocities;
-    uint[] readStates;
 
     void Start()
     {
@@ -122,9 +146,33 @@ public class SPHSimulation1 : MonoBehaviour
         SetupGrid();
         CreateBuffers();
         InitializeParticles();
+        SetupCanvasTexture();
         CacheKernels();
         ready = true;
         Debug.Log($"SPHSimulation جاهز: {numParticles} جسيم، شبكة {gridResolution}، restDensity={restDensity:F2}");
+    }
+
+    // ينشئ تكستشر اللوحة القابل للكتابة من GPU ويربطه بالمادة
+    void SetupCanvasTexture()
+    {
+        if (canvas == null) return;
+
+        int res = canvas.textureResolution;
+        canvasRT = new RenderTexture(res, res, 0, RenderTextureFormat.ARGBFloat);
+        canvasRT.enableRandomWrite = true;   // يسمح للـ compute بالكتابة
+        canvasRT.Create();
+
+        // buffer تراكم الدهان لكل بكسل (يبدأ صفر)
+        canvasAccumBuffer = new ComputeBuffer(res * res, sizeof(float));
+        canvasAccumBuffer.SetData(new float[res * res]);
+
+        // املأ اللوحة بلون الخلفية
+        RenderTexture.active = canvasRT;
+        GL.Clear(true, true, canvas.backgroundColor);
+        RenderTexture.active = null;
+
+        // اعرض التكستشر على اللوحة + أعطه للـ painter
+        canvas.SetGPUTexture(canvasRT);
     }
 
     void SetupGrid()
@@ -160,6 +208,12 @@ public class SPHSimulation1 : MonoBehaviour
         cellEndBuffer = new ComputeBuffer(numCells, sizeof(uint));
         sortedIndicesBuffer = new ComputeBuffer(numParticles, sizeof(uint));
         particleCellIndexBuffer = new ComputeBuffer(numParticles, sizeof(uint));
+
+        // buffer append لمواقع القطرات الواصلة للوحة + عدّاد للقراءة
+        splatPointsBuffer = new ComputeBuffer(numParticles, sizeof(float) * 3,
+                                              ComputeBufferType.Append);
+        splatCountBuffer = new ComputeBuffer(1, sizeof(int),
+                                              ComputeBufferType.IndirectArguments);
     }
 
     void UploadHoles()
@@ -206,16 +260,25 @@ public class SPHSimulation1 : MonoBehaviour
         var states = new uint[numParticles];
         stateBuffer.SetData(states);
 
-        // ألوان ثابتة حسب الزاوية حول المحور العمودي (تكشف الدوران كحلزون)
+        // ألوان الجسيمات: لون الدهان الحالي (أو قوس قزح للتشخيص)
         colorBuffer = new ComputeBuffer(numParticles, sizeof(float) * 4);
         var colors = new Vector4[numParticles];
         for (int i = 0; i < numParticles; i++)
         {
-            Vector3 local = Quaternion.Inverse(rot) * (positions[i] - center);
-            float angle = Mathf.Atan2(local.z, local.x); // -π..π
-            float hue = (angle + Mathf.PI) / (2f * Mathf.PI); // 0..1
-            Color c = Color.HSVToRGB(hue, 0.85f, 1f);
-            colors[i] = new Vector4(c.r, c.g, c.b, 1f);
+            if (useFixedColors)
+            {
+                // وضع التشخيص: قوس قزح حسب الزاوية (يكشف الدوران)
+                Vector3 local = Quaternion.Inverse(rot) * (positions[i] - center);
+                float angle = Mathf.Atan2(local.z, local.x);
+                float hue = (angle + Mathf.PI) / (2f * Mathf.PI);
+                Color c = Color.HSVToRGB(hue, 0.85f, 1f);
+                colors[i] = new Vector4(c.r, c.g, c.b, 1f);
+            }
+            else
+            {
+                // الوضع العادي: كل الجسيمات بلون الدهان الحالي
+                colors[i] = new Vector4(paintColor.r, paintColor.g, paintColor.b, 1f);
+            }
         }
         colorBuffer.SetData(colors);
 
@@ -262,8 +325,9 @@ public class SPHSimulation1 : MonoBehaviour
         kVelocity = compute.FindKernel("ComputeVelocity");
         kCheckHoles = compute.FindKernel("CheckHoles");
         kVortex = compute.FindKernel("ApplyVortex");
+        kPaintCanvas = compute.FindKernel("PaintOnCanvas");
 
-        int[] particleKernels = { kGravity, kCount, kScatter, kRelax, kVelocity, kCheckHoles, kVortex };
+        int[] particleKernels = { kGravity, kCount, kScatter, kRelax, kVelocity, kCheckHoles, kVortex, kPaintCanvas };
         foreach (int k in particleKernels)
         {
             compute.SetBuffer(k, "Positions", positionBuffer);
@@ -283,6 +347,17 @@ public class SPHSimulation1 : MonoBehaviour
             compute.SetBuffer(k, "CellCounts", cellCountsBuffer);
             compute.SetBuffer(k, "CellStart", cellStartBuffer);
             compute.SetBuffer(k, "CellEnd", cellEndBuffer);
+        }
+
+        // ربط buffer القطرات الواصلة بـ ComputeVelocity (هو من يكتب فيه)
+        compute.SetBuffer(kVelocity, "SplatPoints", splatPointsBuffer);
+
+        // ربط تكستشر اللوحة بـ kernel الرسم على GPU
+        if (canvasRT != null)
+        {
+            compute.SetTexture(kPaintCanvas, "CanvasTex", canvasRT);
+            compute.SetBuffer(kPaintCanvas, "CanvasAccum", canvasAccumBuffer);
+            compute.SetBuffer(kPaintCanvas, "ParticleColors", colorBuffer);
         }
     }
 
@@ -309,6 +384,10 @@ public class SPHSimulation1 : MonoBehaviour
         int pGroups = Mathf.CeilToInt(numParticles / (float)THREADS);
         int cGroups = Mathf.CeilToInt(numCells / (float)THREADS);
 
+        // صفّر عدّاد القطرات الواصلة قبل خطوة المحاكاة
+        if (canvas != null)
+            splatPointsBuffer.SetCounterValue(0);
+
         compute.Dispatch(kGravity, pGroups, 1, 1);
 
         for (int it = 0; it < iterations; it++)
@@ -329,55 +408,114 @@ public class SPHSimulation1 : MonoBehaviour
         // فحص الثقوب: تحويل الجزيئات القريبة لقطرات حرة
         compute.Dispatch(kCheckHoles, pGroups, 1, 1);
 
-        // معالجة القطرات الواصلة للوحة (قراءة async غير محجوبة - لا تجمّد الإطار)
-        if (canvas != null)
-            RequestCanvasReadback();
-    }
-
-    // قراءة غير متزامنة: نطلب البيانات وتصل بعد إطارات بدون تجميد الجهاز
-    bool readbackPending = false;
-    void RequestCanvasReadback()
-    {
-        if (readbackPending) return;   // طلب واحد فقط في كل مرة
-        if (Time.frameCount % Mathf.Max(1, canvasCheckInterval) != 0) return;
-
-        readbackPending = true;
-        UnityEngine.Rendering.AsyncGPUReadback.Request(positionBuffer, (req) =>
+        // الرسم فوراً بعد كشف الوصول (نفس الخطوة = صفر تأخير)
+        if (canvas != null && canvasRT != null)
         {
-            OnPositionsReadback(req);
-        });
-    }
-
-    void OnPositionsReadback(UnityEngine.Rendering.AsyncGPUReadbackRequest req)
-    {
-        readbackPending = false;
-        if (!ready || req.hasError || canvas == null) return;
-
-        var posData = req.GetData<Vector3>();
-        int count = Mathf.Min(posData.Length, numParticles);
-
-        // نقرأ الحالات بشكل متزامن (buffer صغير: uint واحد لكل جسيم)
-        if (readStates == null || readStates.Length != numParticles)
-            readStates = new uint[numParticles];
-        stateBuffer.GetData(readStates);
-
-        bool anyDrawn = false;
-        for (int i = 0; i < count; i++)
-        {
-            // state=3 يعني القطرة وصلت اللوحة (الـ compute علّمها)
-            if (readStates[i] != 3) continue;
-
-            Vector3 p = posData[i];
-            // سرعة صفر => بقعة نظيفة بحجم القطرة (بلا مسار ممتد)
-            canvas.Splat(p, Vector3.zero, paintColor);
-
-            readStates[i] = 2;   // مستهلكة نهائياً
-            anyDrawn = true;
+            UpdateCanvasConstants();
+            compute.Dispatch(kPaintCanvas, pGroups, 1, 1);
         }
 
-        // نكتب الحالات فقط (buffer صغير، رخيص) لتثبيت "مستهلكة"
-        if (anyDrawn)
-            stateBuffer.SetData(readStates);
+        // تشخيص دوري
+        if (debugCanvas && Time.frameCount % 60 == 0)
+            DiagnoseStates();
+    }
+
+    [Header("Debug")]
+    public bool debugCanvas = false;
+    uint[] diagStates;
+    Vector3[] diagPositions;
+    void DiagnoseStates()
+    {
+        if (diagStates == null || diagStates.Length != numParticles)
+        {
+            diagStates = new uint[numParticles];
+            diagPositions = new Vector3[numParticles];
+        }
+        stateBuffer.GetData(diagStates);
+        positionBuffer.GetData(diagPositions);
+        int inBucket = 0, free = 0, waiting = 0, consumed = 0, painted = 0;
+        int firstWaiting = -1;
+        for (int i = 0; i < numParticles; i++)
+        {
+            uint st = diagStates[i];
+            if (st == 0) inBucket++;
+            else if (st == 1) { free++; if (firstWaiting < 0) firstWaiting = i; }
+            else if (st == 2) consumed++;
+            else if (st == 3) waiting++;
+            else if (st == 4) painted++;
+        }
+        Debug.Log($"[تشخيص] داخل={inBucket} حرة={free} تنتظر_رسم={waiting} مستهلكة={consumed} مرسومة={painted}");
+
+        // اطبع موقع اللوحة وحجمها المحسوب + UV لأول قطرة حرة
+        Debug.Log($"[لوحة] مركز={canvas.transform.position:F2} نصف_حجم={canvasHalfSize:F2} canvasY={canvasY:F2}");
+        if (firstWaiting >= 0)
+        {
+            Vector3 p = diagPositions[firstWaiting];
+            float u = (p.x - canvas.transform.position.x) / (canvasHalfSize.x * 2f) + 0.5f;
+            float v = (p.z - canvas.transform.position.z) / (canvasHalfSize.y * 2f) + 0.5f;
+            Debug.Log($"[قطرة حرة] موقع={p:F2} => UV=({u:F2},{v:F2})");
+        }
+    }
+
+    void Update()
+    {
+        // كشف تغيير لون الدهان من الإنسبكتر أثناء التشغيل => طبّقه فوراً
+        if (ready && paintColor != lastAppliedColor)
+        {
+            ApplyColorToInBucketParticles(paintColor);
+            lastAppliedColor = paintColor;
+        }
+
+        // الرسم انتقل لـ FixedUpdate (بعد كشف الوصول مباشرة) لصفر تأخير
+    }
+
+    Color lastAppliedColor = Color.clear;
+
+    // يطبّق لوناً على الجسيمات داخل السطل (state=0) فقط
+    void ApplyColorToInBucketParticles(Color c)
+    {
+        if (colorBuffer == null || !ready) return;
+        var states = new uint[numParticles];
+        stateBuffer.GetData(states);
+        var colors = new Vector4[numParticles];
+        colorBuffer.GetData(colors);
+        for (int i = 0; i < numParticles; i++)
+        {
+            if (states[i] == 0)
+                colors[i] = new Vector4(c.r, c.g, c.b, 1f);
+        }
+        colorBuffer.SetData(colors);
+    }
+
+    // يمرّر ثوابت اللوحة للـ compute (تُستدعى من Update و SetConstants)
+    void UpdateCanvasConstants()
+    {
+        if (canvas == null) return;
+        if (autoCanvasY)
+            canvasY = canvas.transform.position.y + canvasSurfaceOffset;
+        if (autoCanvasSize)
+        {
+            Vector3 sc = canvas.transform.lossyScale;
+            canvasHalfSize = new Vector2(5f * sc.x, 5f * sc.z);
+        }
+        compute.SetInt("canvasEnabled", 1);
+        compute.SetFloat("canvasY", canvasY);
+        compute.SetVector("canvasCenter", canvas.transform.position);
+        compute.SetVector("canvasHalfSize", canvasHalfSize);
+        if (canvasRT != null)
+        {
+            compute.SetInt("canvasResolution", canvas.textureResolution);
+            compute.SetVector("paintColorGPU", paintColor);
+            float metersToPixels = canvas.textureResolution / (canvasHalfSize.x * 2f);
+            compute.SetFloat("splatRadiusPixels", canvasSplatRadius * metersToPixels);
+            compute.SetFloat("paintOpacityGPU", canvasPaintOpacity);
+            compute.SetInt("canvasFlipU", canvasFlipU ? 1 : 0);
+            compute.SetInt("canvasFlipV", canvasFlipV ? 1 : 0);
+            compute.SetInt("canvasPooling", enablePoolGrowth ? 1 : 0);
+            compute.SetFloat("poolGrowth", poolGrowth);
+            compute.SetInt("canvasWetMix", enableWetMix ? 1 : 0);
+            compute.SetFloat("wetMixStrength", wetMixStrength);
+        }
     }
 
     void SetConstants(float dt, Vector3 externalAccel)
@@ -416,11 +554,32 @@ public class SPHSimulation1 : MonoBehaviour
 
         // ثوابت اللوحة (لكشف وصول القطرات داخل الـ compute)
         bool canvasOn = canvas != null;
+        // احسب مستوى اللوحة تلقائياً من موقعها + إزاحة السطح
+        if (canvasOn && autoCanvasY)
+            canvasY = canvas.transform.position.y + canvasSurfaceOffset;
+        // احسب حجم اللوحة تلقائياً: Unity Plane حجمه 10×10 عند scale=1
+        // فنصف الحجم = 5 × scale
+        if (canvasOn && autoCanvasSize)
+        {
+            Vector3 sc = canvas.transform.lossyScale;
+            canvasHalfSize = new Vector2(5f * sc.x, 5f * sc.z);
+        }
         compute.SetInt("canvasEnabled", canvasOn ? 1 : 0);
         compute.SetFloat("canvasY", canvasY);
         Vector3 cc = canvasOn ? canvas.transform.position : Vector3.zero;
         compute.SetVector("canvasCenter", cc);
         compute.SetVector("canvasHalfSize", canvasHalfSize);
+
+        // ثوابت الرسم على GPU
+        if (canvasOn && canvasRT != null)
+        {
+            compute.SetInt("canvasResolution", canvas.textureResolution);
+            compute.SetVector("paintColorGPU", paintColor);
+            // نصف قطر البقعة بالبكسل: من متر إلى بكسل
+            float metersToPixels = canvas.textureResolution / (canvasHalfSize.x * 2f);
+            compute.SetFloat("splatRadiusPixels", canvasSplatRadius * metersToPixels);
+            compute.SetFloat("paintOpacityGPU", canvasPaintOpacity);
+        }
     }
 
     public int GetParticleCount() => numParticles;
@@ -430,6 +589,18 @@ public class SPHSimulation1 : MonoBehaviour
     public ComputeBuffer GetStateBuffer() => stateBuffer;
     public bool UseFixedColors() => useFixedColors;
 
+    /// <summary>
+    /// يبدّل لون الدهان الحالي. الجسيمات التي لا تزال في السطل تأخذ اللون الجديد.
+    /// استدعِها من زر UI لتغيير لون الرسم.
+    /// </summary>
+    public void SetPaintColor(Color newColor)
+    {
+        paintColor = newColor;
+        lastAppliedColor = newColor;
+        ApplyColorToInBucketParticles(newColor);
+        Debug.Log($"[SPH] تبديل لون الدهان إلى {newColor}");
+    }
+
     void OnDestroy()
     {
         positionBuffer?.Release();
@@ -438,6 +609,10 @@ public class SPHSimulation1 : MonoBehaviour
         stateBuffer?.Release();
         holeBuffer?.Release();
         colorBuffer?.Release();
+        splatPointsBuffer?.Release();
+        splatCountBuffer?.Release();
+        if (canvasRT != null) canvasRT.Release();
+        canvasAccumBuffer?.Release();
         cellCountsBuffer?.Release();
         cellStartBuffer?.Release();
         cellEndBuffer?.Release();

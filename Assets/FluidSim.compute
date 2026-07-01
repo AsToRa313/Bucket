@@ -19,6 +19,7 @@
 #pragma kernel ComputeVelocity
 #pragma kernel CheckHoles
 #pragma kernel ApplyVortex
+#pragma kernel PaintOnCanvas
 
 // ------------------------------------------------------------
 //  البفرز الرئيسية
@@ -42,6 +43,26 @@ const float canvasY; // مستوى ارتفاع اللوحة بالعالم
 const float3 canvasCenter; // مركز اللوحة بالعالم
 const float2 canvasHalfSize; // نصف أبعاد اللوحة (X,Z)
 const uint canvasEnabled; // 1 = الكشف مفعّل
+
+// مواقع القطرات الواصلة للوحة (يكتبها الـ compute، يقرأها المدير للرسم)
+AppendStructuredBuffer<float3> SplatPoints;
+
+// تكستشر اللوحة القابل للكتابة (الرسم مباشرة على GPU - صفر تأخير)
+RWTexture2D<float4> CanvasTex;
+// تراكم الدهان لكل بكسل (يزيد مع كل بقعة => توسّع بلا سقف)
+RWStructuredBuffer<float> CanvasAccum;
+// لون كل جسيم (لدعم ألوان متعددة على الكانفاس)
+RWStructuredBuffer<float4> ParticleColors;
+const uint canvasResolution; // دقة التكستشر (بكسل)
+const float4 paintColorGPU; // لون الدهان
+const float splatRadiusPixels; // نصف قطر البقعة بالبكسل
+const float paintOpacityGPU; // شفافية الدهان
+const uint canvasFlipU; // قلب المحور الأفقي (0/1)
+const uint canvasFlipV; // قلب المحور العمودي (0/1)
+const uint canvasPooling; // تفعيل توسّع البقعة عند التراكم (0/1)
+const float poolGrowth; // معامل نمو البقعة عند التشبّع
+const uint canvasWetMix; // تفعيل خلط الألوان الرطب (0/1)
+const float wetMixStrength; // قوة الخلط الطرحي (0=متوسط، 1=طرحي كامل)
 
 // التجزئة المكانية
 RWStructuredBuffer<uint> CellCounts;
@@ -284,11 +305,18 @@ void ComputeVelocity(uint3 id : SV_DispatchThreadID)
     if (id.x >= numParticles)
         return;
 
-    // المستهلكة/المنتظرة الرسم: مخبّأة ومتجمّدة
-    if (States[id.x] >= 2)
+    // المستهلكة (2) والمرسومة (4): مخبّأة ومتجمّدة
+    // لكن state=3 (وصلت، تنتظر الرسم) تبقى بموقعها ليرسمها PaintOnCanvas
+    if (States[id.x] == 2 || States[id.x] == 4)
     {
         Velocities[id.x] = float3(0, 0, 0);
         Positions[id.x] = float3(9999, 9999, 9999);
+        return;
+    }
+    if (States[id.x] == 3)
+    {
+        // ثابتة على السطح، تنتظر الرسم (لا تتحرك)
+        Velocities[id.x] = float3(0, 0, 0);
         return;
     }
 
@@ -303,14 +331,23 @@ void ComputeVelocity(uint3 id : SV_DispatchThreadID)
     // القطرات الحرة: فحص وصول اللوحة + تسقط بحرية بلا حدود سطل
     if (States[id.x] == 1)
     {
-        // وصلت لمستوى اللوحة وداخل حدودها؟ => علّمها "تنتظر الرسم" (3)
+        // التقط القطرة لو وصلت أو عبرت مستوى اللوحة (تمنع الاختراق)
+        // نفحص الموقع الحالي والسابق: لو عبرت المستوى بينهما
+        float prevY = PrevPositions[id.x].y;
+        bool crossed = (newPos.y <= canvasY) || (prevY > canvasY && newPos.y <= canvasY);
         if (canvasEnabled == 1 && newPos.y <= canvasY)
         {
             float dx = abs(newPos.x - canvasCenter.x);
             float dz = abs(newPos.z - canvasCenter.z);
             if (dx <= canvasHalfSize.x && dz <= canvasHalfSize.y)
             {
-                States[id.x] = 3; // وصلت اللوحة، المدير سيرسمها
+                // ثبّت الموقع عند سطح اللوحة بالضبط (نقطة الرسم دقيقة)
+                float3 splatPos = float3(newPos.x, canvasY, newPos.z);
+                Positions[id.x] = splatPos;
+                Velocities[id.x] = float3(0, 0, 0);
+                States[id.x] = 3; // وصلت اللوحة
+                // اكتب موقع الرسم الصحيح فوراً (لا يعتمد على readback متأخر)
+                SplatPoints.Append(splatPos);
             }
         }
         return;
@@ -457,4 +494,133 @@ void ApplyVortex(uint3 id : SV_DispatchThreadID)
 
     if (affected)
         Velocities[id.x] = QuatRotate(bucketRotation, localVel);
+}
+
+// ============================================================
+//  7. الرسم على اللوحة مباشرة على GPU (صفر تأخير)
+//     كل جسيم وصل اللوحة (state=3) يرسم بقعة على التكستشر فوراً
+// ============================================================
+[numthreads(256, 1, 1)]
+void PaintOnCanvas(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    if (States[id.x] != 3)
+        return; // فقط القطرات الواصلة الجديدة
+
+    float3 pos = Positions[id.x];
+    // لون هذا الجسيم (يدعم ألوان متعددة)
+    float4 dropColor = ParticleColors[id.x];
+
+    // حوّل موقع العالم إلى إحداثيات UV على اللوحة [0,1]
+    float u = (pos.x - canvasCenter.x) / (canvasHalfSize.x * 2.0) + 0.5;
+    float v = (pos.z - canvasCenter.z) / (canvasHalfSize.y * 2.0) + 0.5;
+
+    // RenderTexture في Unity: المحور العمودي (Y بالبكسل) مقلوب
+    // نقلب V لمطابقة اتجاه العرض الصحيح
+    if (canvasFlipV == 1)
+        v = 1.0 - v;
+    if (canvasFlipU == 1)
+        u = 1.0 - u;
+
+    // خارج اللوحة؟ علّمها مستهلكة وأنهِ
+    if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0)
+    {
+        States[id.x] = 4;
+        return;
+    }
+
+    // مركز البقعة بالبكسل
+    int cx = (int) (u * canvasResolution);
+    int cy = (int) (v * canvasResolution);
+    int r = (int) splatRadiusPixels;
+    if (r < 1)
+        r = 1;
+    int coreRadius = r; // حجم القطرة الثابت (المركز)
+
+    // التوسّع: البركة تكبر للخارج مع التراكم، لكن المركز يبقى بحجم القطرة
+    // outerRadius = حجم البركة المتوسّعة (تحت)، coreRadius = الطبقة الجديدة (فوق بالنص)
+    int outerRadius = coreRadius;
+    if (canvasPooling == 1)
+    {
+        int centerIdx = clamp(cy, 0, (int) canvasResolution - 1) * (int) canvasResolution
+                      + clamp(cx, 0, (int) canvasResolution - 1);
+        CanvasAccum[centerIdx] += 1.0;
+        float accum = CanvasAccum[centerIdx];
+        // البركة الخارجية تتوسّع لوغاريتمياً مع التراكم
+        float growth = log2(1.0 + accum) * poolGrowth;
+        outerRadius = (int) (coreRadius * (1.0 + growth));
+        uint maxR = canvasResolution / 4u;
+        if (outerRadius > (int) maxR)
+            outerRadius = (int) maxR;
+    }
+    int r_draw = outerRadius; // نرسم حتى الحد الخارجي
+
+    // ارسم دائرة ناعمة: البركة الخارجية (تحت) + المركز الكامل (فوق)
+    for (int dy = -r_draw; dy <= r_draw; dy++)
+    {
+        for (int dx = -r_draw; dx <= r_draw; dx++)
+        {
+            int px = cx + dx;
+            int py = cy + dy;
+            if (px < 0 || px >= (int) canvasResolution)
+                continue;
+            if (py < 0 || py >= (int) canvasResolution)
+                continue;
+
+            float fdx = (float) dx;
+            float fdy = (float) dy;
+            float dist = sqrt(fdx * fdx + fdy * fdy);
+
+            // تلاشي البركة الكاملة (حتى الحد الخارجي)
+            float outerFalloff = 1.0 - saturate(dist / (float) r_draw);
+            outerFalloff = smoothstep(0.0, 1.0, outerFalloff);
+            if (outerFalloff <= 0.001)
+                continue;
+
+            // هل داخل المركز (الطبقة الجديدة بحجم القطرة)؟
+            bool inCore = dist <= (float) coreRadius;
+            float coreFalloff = 0.0;
+            if (inCore)
+            {
+                coreFalloff = 1.0 - saturate(dist / (float) coreRadius);
+                coreFalloff = smoothstep(0.0, 1.0, coreFalloff);
+            }
+
+            // البركة الخارجية: شفافية أقل (طبقة رقيقة متوسّعة)
+            // المركز: لون كامل (الطبقة الطازجة)
+            float alpha;
+            if (inCore)
+                alpha = (coreFalloff > 0.8) ? coreFalloff : paintOpacityGPU * coreFalloff;
+            else
+                alpha = paintOpacityGPU * outerFalloff * 0.5; // البركة أرق
+
+            uint2 coord = uint2((uint) px, (uint) py);
+            float4 existing = CanvasTex[coord];
+
+            // هل البكسل فيه دهان مختلف مسبقاً؟ (رطب => خلط)
+            float colorDiff = distance(existing.rgb, dropColor.rgb);
+            bool hasPaint = existing.a > 0.05;
+
+            float4 result;
+            if (hasPaint && colorDiff > 0.1 && canvasWetMix == 1)
+            {
+                // خلط طرحي واقعي (مثل الدهان)
+                float3 subtractive = existing.rgb * dropColor.rgb;
+                float3 average = (existing.rgb + dropColor.rgb) * 0.5;
+                float3 mixed = lerp(average, subtractive, wetMixStrength);
+                result.rgb = lerp(existing.rgb, mixed, alpha);
+                result.a = max(existing.a, alpha);
+            }
+            else
+            {
+                // نفس اللون أو بكسل فارغ => طبقة عادية
+                result = lerp(existing, dropColor, alpha);
+                result.a = max(existing.a, alpha);
+            }
+            CanvasTex[coord] = result;
+        }
+    }
+
+    States[id.x] = 4; // مستهلكة نهائياً
 }
