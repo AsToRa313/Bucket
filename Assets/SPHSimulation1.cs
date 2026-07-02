@@ -1,9 +1,6 @@
 using UnityEngine;
 
-/// <summary>
-/// مدير محاكاة سوائل على GPU بصيغة Clavet (Double-Density Relaxation).
-/// يوفّر GetPositionBuffer/GetVelocityBuffer/GetParticleCount للـ SPHRenderer.
-/// </summary>
+
 public class SPHSimulation1 : MonoBehaviour
 {
     [Header("Compute Shader")]
@@ -662,16 +659,13 @@ public class SPHSimulation1 : MonoBehaviour
     public ComputeBuffer GetStateBuffer() => stateBuffer;
     public bool UseFixedColors() => useFixedColors;
 
-    /// <summary>
-    /// يبدّل لون الدهان الحالي. الجسيمات التي لا تزال في السطل تأخذ اللون الجديد.
-    /// استدعِها من زر UI لتغيير لون الرسم.
-    /// </summary>
+
     public void SetPaintColor(Color newColor)
     {
         paintColor = newColor;
         lastAppliedColor = newColor;
         ApplyColorToInBucketParticles(newColor);
-        Debug.Log($"[SPH] تبديل لون الدهان إلى {newColor}");
+        Debug.Log($"[SPH] paint color changed to {newColor}");
     }
 
     void OnDestroy()

@@ -11,12 +11,12 @@ public class PaintColorSwitcher : MonoBehaviour
     [Tooltip("نظام المحاكاة")]
     public SPHSimulation1 simulation;
 
-    [Header("الألوان المتاحة")]
-    public Color color1 = new Color(0.15f, 0.35f, 0.9f, 1f);  // أزرق
-    public Color color2 = new Color(0.9f, 0.15f, 0.15f, 1f);  // أحمر
-    public Color color3 = new Color(0.95f, 0.8f, 0.1f, 1f);   // أصفر
-    public Color color4 = new Color(0.15f, 0.7f, 0.2f, 1f);   // أخضر
-    public Color color5 = new Color(0.6f, 0.15f, 0.7f, 1f);   // بنفسجي
+    [Header("الألوان المتاحة (نظام CMYK)")]
+    public Color color1 = new Color(0f, 1f, 1f, 1f);    // السماوي (Cyan)
+    public Color color2 = new Color(1f, 0f, 1f, 1f);    // الأرجواني (Magenta)
+    public Color color3 = new Color(1f, 1f, 0f, 1f);    // الأصفر (Yellow)
+    public Color color4 = new Color(0.1f, 0.1f, 0.1f, 1f); // الأسود (Key/Black)
+    public Color color5 = new Color(1f, 1f, 1f, 1f);    // الأبيض (White) - مفيد للتفتيح
 
     [Header("التحكم بلوحة المفاتيح")]
     [Tooltip("تفعيل مفاتيح 1-5 لتبديل الألوان")]
@@ -32,7 +32,15 @@ public class PaintColorSwitcher : MonoBehaviour
         else if (Input.GetKeyDown(KeyCode.Alpha4)) SetColor4();
         else if (Input.GetKeyDown(KeyCode.Alpha5)) SetColor5();
     }
-
+    void Awake()
+    {
+        // هذه الأسطر ستجبر Unity على تجاهل الـ Inspector واستخدام هذه الألوان دائماً
+        color1 = new Color(0f, 1f, 1f, 1f);       // Cyan
+        color2 = new Color(1f, 0f, 1f, 1f);       // Magenta
+        color3 = new Color(1f, 1f, 0f, 1f);       // Yellow
+        color4 = new Color(0.1f, 0.1f, 0.1f, 1f); // Black
+        color5 = new Color(1f, 1f, 1f, 1f);       // White
+    }
     // هذه الدوال تُربط بأزرار UI (OnClick) أو تُستدعى بالمفاتيح
     public void SetColor1() { if (simulation) simulation.SetPaintColor(color1); }
     public void SetColor2() { if (simulation) simulation.SetPaintColor(color2); }

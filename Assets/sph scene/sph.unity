@@ -128,45 +128,15 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 145059601}
-  - component: {fileID: 145059600}
+  - component: {fileID: 145059602}
+  - component: {fileID: 145059603}
   m_Layer: 0
-  m_Name: GameObject
+  m_Name: FluidBox
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &145059600
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 145059599}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: bb68cde6fd027124b8de38f8149bbd3e, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::FluidBoxDemo
-  compute: {fileID: 7200000, guid: 2d2daa67b998f5d4bbf93f586269b148, type: 3}
-  numParticles: 3000
-  iterations: 3
-  smoothingRadius: 0.15
-  restDensity: 4
-  stiffness: 0.5
-  nearStiffness: 0.5
-  velocityDamping: 0.99
-  gravity: 9.81
-  collisionDamping: 0.3
-  boxSize: {x: 1.5, y: 2, z: 1.5}
-  showBoxGizmo: 1
-  shakeForce: 25
-  shakeDuration: 0.3
-  particleMesh: {fileID: 10210, guid: 0000000000000000e000000000000000, type: 0}
-  particleMaterial: {fileID: 2100000, guid: ccea38152865b994bb51efc479a18bc1, type: 2}
-  particleShader: {fileID: 4800000, guid: c640871491162fa458c848fd208a6d52, type: 3}
-  particleSize: 0.08
-  fluidColor: {r: 0.2, g: 0.5, b: 0.95, a: 1}
 --- !u!4 &145059601
 Transform:
   m_ObjectHideFlags: 0
@@ -182,6 +152,47 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &145059602
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 145059599}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f87b0d3b662e62c44967e8d229c951eb, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SimpleFluidBox
+  compute: {fileID: 7200000, guid: 2d2daa67b998f5d4bbf93f586269b148, type: 3}
+  boxSize: {x: 2, y: 1, z: 2}
+  fillRatio: 0.5
+  numParticles: 1000
+  iterations: 3
+  smoothingRadius: 0.08
+  restDensity: 10
+  stiffness: 4
+  nearStiffness: 2
+  velocityDamping: 0.98
+  gravity: 0
+  wallRestitution: 0.295
+--- !u!114 &145059603
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 145059599}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9557d4a1e16dda14890421e4c6e8cd6f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SPHRenderer
+  simulation: {fileID: 145059602}
+  particleSize: 0.05
+  colorSlow: {r: 0.1, g: 0.4, b: 0.9, a: 1}
+  colorFast: {r: 1, g: 0.3, b: 0, a: 1}
+  speedScale: 3
 --- !u!1 &863465833
 GameObject:
   m_ObjectHideFlags: 0

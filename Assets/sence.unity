@@ -262,6 +262,98 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &760084242
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 760084243}
+  - component: {fileID: 760084245}
+  - component: {fileID: 760084244}
+  m_Layer: 0
+  m_Name: HoleCamera
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &760084243
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 760084242}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0.24538021, y: 0.7023656, z: -0.60421854, w: 0.2852914}
+  m_LocalPosition: {x: 0, y: -1.5000001, z: 0}
+  m_LocalScale: {x: 180.0001, y: 2.0180213, z: 3.2844486}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 811034500}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!81 &760084244
+AudioListener:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 760084242}
+  m_Enabled: 0
+--- !u!20 &760084245
+Camera:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 760084242}
+  m_Enabled: 1
+  serializedVersion: 2
+  m_ClearFlags: 1
+  m_BackGroundColor: {r: 0.19215687, g: 0.3019608, b: 0.4745098, a: 0}
+  m_projectionMatrixMode: 1
+  m_GateFitMode: 2
+  m_FOVAxisMode: 0
+  m_Iso: 200
+  m_ShutterSpeed: 0.005
+  m_Aperture: 16
+  m_FocusDistance: 10
+  m_FocalLength: 50
+  m_BladeCount: 5
+  m_Curvature: {x: 2, y: 11}
+  m_BarrelClipping: 0.25
+  m_Anamorphism: 0
+  m_SensorSize: {x: 36, y: 24}
+  m_LensShift: {x: 0, y: 0}
+  m_NormalizedViewPortRect:
+    serializedVersion: 2
+    x: 0
+    y: 0
+    width: 1
+    height: 1
+  near clip plane: 0.3
+  far clip plane: 1000
+  field of view: 60
+  orthographic: 0
+  orthographic size: 5
+  m_Depth: 0
+  m_CullingMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  m_RenderingPath: -1
+  m_TargetTexture: {fileID: 0}
+  m_TargetDisplay: 1
+  m_TargetEye: 3
+  m_HDR: 1
+  m_AllowMSAA: 1
+  m_AllowDynamicResolution: 0
+  m_ForceIntoRT: 0
+  m_OcclusionCulling: 1
+  m_StereoConvergence: 10
+  m_StereoSeparation: 0.022
 --- !u!1 &811034499
 GameObject:
   m_ObjectHideFlags: 0
@@ -274,8 +366,8 @@ GameObject:
   - component: {fileID: 811034504}
   - component: {fileID: 811034503}
   - component: {fileID: 811034502}
+  - component: {fileID: 811034511}
   - component: {fileID: 811034506}
-  - component: {fileID: 811034509}
   - component: {fileID: 811034508}
   - component: {fileID: 811034510}
   m_Layer: 0
@@ -297,7 +389,8 @@ Transform:
   m_LocalPosition: {x: 0, y: -2.1, z: 0}
   m_LocalScale: {x: 0.5, y: 0.3, z: 0.5}
   m_ConstrainProportionsScale: 0
-  m_Children: []
+  m_Children:
+  - {fileID: 760084243}
   m_Father: {fileID: 1088812488}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!136 &811034502
@@ -422,8 +515,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SPHSimulation1
   compute: {fileID: 7200000, guid: b3ba207ba05499b46896ceeec3d1f8fc, type: 3}
-  numParticles: 2000
-  iterations: 6
+  numParticles: 1000
+  iterations: 4
   smoothingRadius: 0.08
   autoRestDensity: 1
   restDensity: 10
@@ -434,7 +527,7 @@ MonoBehaviour:
   maxInertiaAccel: 30
   collisionDamping: 0.4
   wallRestitution: 0.1
-  pendulum: {fileID: 0}
+  pendulum: {fileID: 811034506}
   bucketTransform: {fileID: 811034500}
   bucketRadius: 0.25
   bucketHeight: 0.6
@@ -448,7 +541,7 @@ MonoBehaviour:
   dropletApproachSpeed: 0
   holes:
   - localPosition: {x: 0, y: -0.3, z: 0}
-    radius: 0
+    radius: 0.01
   enableVortex: 0
   vortexRange: 6
   vortexPull: 1
@@ -471,24 +564,6 @@ MonoBehaviour:
   wetMixStrength: 0.5
   canvasCheckInterval: 2
   debugCanvas: 0
---- !u!114 &811034509
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 811034499}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 9557d4a1e16dda14890421e4c6e8cd6f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::SPHRenderer
-  simulation: {fileID: 811034508}
-  particleSize: 0.01
-  colorSlow: {r: 0.1, g: 0.4, b: 0.9, a: 1}
-  colorFast: {r: 1, g: 0.3, b: 0, a: 1}
-  useUnifiedColor: 1
-  speedScale: 3
 --- !u!114 &811034510
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -505,6 +580,24 @@ MonoBehaviour:
   segments: 32
   lineWidth: 0.01
   ringColor: {r: 0.21960786, g: 0.21960786, b: 0.21960786, a: 1}
+--- !u!114 &811034511
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 811034499}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d6c66d2c00e2ee840867e8c8d8e04048, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SPHRenderer
+  simulation: {fileID: 811034508}
+  particleSize: 0.01
+  colorSlow: {r: 0.1, g: 0.4, b: 0.9, a: 1}
+  colorFast: {r: 1, g: 0.3, b: 0, a: 1}
+  useUnifiedColor: 1
+  speedScale: 3
 --- !u!1 &1088812487
 GameObject:
   m_ObjectHideFlags: 0

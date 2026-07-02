@@ -1,10 +1,6 @@
 using UnityEngine;
 using System.Collections.Generic;
 
-/// <summary>
-/// يرسم حلقة (دائرة مفرغة) مرئية حول كل ثقب تصريف في SPHSimulation1.
-/// الحلقات تتبع السطل تلقائياً (تُنشأ كأبناء له).
-/// </summary>
 public class HoleVisualizer : MonoBehaviour
 {
     [Header("المرجع")]
@@ -39,11 +35,9 @@ public class HoleVisualizer : MonoBehaviour
         for (int i = 0; i < holes.Length; i++)
         {
             var go = new GameObject($"HoleRing_{i}");
-            // لا نجعلها ابناً (لتجنّب وراثة scale السطل غير الموحّد)
-            // بل نحدّثها يدوياً كل إطار بإحداثيات عالمية
-
+           
             var lr = go.AddComponent<LineRenderer>();
-            lr.useWorldSpace = true;        // إحداثيات عالمية (مطابقة للفيزياء)
+            lr.useWorldSpace = true;      
             lr.loop = true;
             lr.positionCount = segments;
             lr.startWidth = lineWidth;
@@ -59,8 +53,7 @@ public class HoleVisualizer : MonoBehaviour
         UpdateRings();
     }
 
-    // تحديث مواقع الحلقات بإحداثيات عالمية (دوران + إزاحة، بدون scale)
-    // مطابق تماماً لحساب الـ compute shader
+   
     void UpdateRings()
     {
         var holes = simulation.holes;

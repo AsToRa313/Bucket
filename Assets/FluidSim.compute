@@ -1,15 +1,3 @@
-// ============================================================
-//  FluidSim.compute  —  النسخة 2 (صيغة Clavet النظيفة)
-//  محاكاة سوائل تفاعلية على GPU
-//  Double-Density Relaxation (Clavet et al. 2005)
-//
-//  ترتيب الاستدعاء كل خطوة:
-//    1. ApplyGravity        (جاذبية + قصور + حفظ الموقع السابق + تحريك)
-//    2. BuildSpatialHash    (clear → count → prefix → scatter)
-//    3. DoubleDensityRelax  (كثافة مزدوجة + إزاحة مواقع)
-//    4. ComputeVelocity     (السرعة = (الموقع - السابق)/dt) + حدود + لزوجة
-// ============================================================
-
 #pragma kernel ApplyGravity
 #pragma kernel ClearGrid
 #pragma kernel CountParticles
@@ -21,48 +9,48 @@
 #pragma kernel ApplyVortex
 #pragma kernel PaintOnCanvas
 
-// ------------------------------------------------------------
-//  البفرز الرئيسية
-// ------------------------------------------------------------
+// main buffers 
+
 RWStructuredBuffer<float3> Positions; // المواقع الحالية
 RWStructuredBuffer<float3> PrevPositions; // المواقع قبل الخطوة (لحساب السرعة)
 RWStructuredBuffer<float3> Velocities; // السرعات
 RWStructuredBuffer<uint> States; // 0 = داخل السطل، 1 = قطرة حرة
 
-// الثقوب: كل ثقب = float4(موقع محلي xyz، نصف القطر w)
+
 StructuredBuffer<float4> Holes;
 const uint numHoles;
 
 // قوى الدوامة حول الثقوب
-const float vortexRange; // نطاق تأثير الدوامة حول الثقب (مضاعف لنصف القطر)
-const float vortexPull; // قوة الجذب الشعاعي نحو الثقب
-const float vortexSpin; // قوة الدوران (الالتفاف) حول محور الثقب
+const float vortexRange; 
+const float vortexPull; 
+const float vortexSpin; 
 
-// اللوحة: كشف وصول القطرات (للرسم)
-const float canvasY; // مستوى ارتفاع اللوحة بالعالم
-const float3 canvasCenter; // مركز اللوحة بالعالم
-const float2 canvasHalfSize; // نصف أبعاد اللوحة (X,Z)
-const uint canvasEnabled; // 1 = الكشف مفعّل
+// كشف وصول القطرات عشان الرسم على اللوحة (canvas)
+const float canvasY; 
+const float3 canvasCenter;
+const float2 canvasHalfSize; 
+const uint canvasEnabled;
 
-// مواقع القطرات الواصلة للوحة (يكتبها الـ compute، يقرأها المدير للرسم)
+//كواقع الرسم على اللوحة: نحتاج لتخزين مواقع القطرات الواصلة فوراً (zero-latency)
+
 AppendStructuredBuffer<float3> SplatPoints;
 
-// تكستشر اللوحة القابل للكتابة (الرسم مباشرة على GPU - صفر تأخير)
+//للرسم مباشرة على التكستشر (RenderTexture) على GPU: نحتاج لتخزين اللون والشفافية لكل بكسل
 RWTexture2D<float4> CanvasTex;
-// تراكم الدهان لكل بكسل (يزيد مع كل بقعة => توسّع بلا سقف)
+// تراكم الدهان لكل بكسل (يزيد مع كل بقعة => توسّع بلا سقف) م
 RWStructuredBuffer<float> CanvasAccum;
 // لون كل جسيم (لدعم ألوان متعددة على الكانفاس)
 RWStructuredBuffer<float4> ParticleColors;
-const uint canvasResolution; // دقة التكستشر (بكسل)
-const float4 paintColorGPU; // لون الدهان
-const float splatRadiusPixels; // نصف قطر البقعة بالبكسل
-const float paintOpacityGPU; // شفافية الدهان
-const uint canvasFlipU; // قلب المحور الأفقي (0/1)
-const uint canvasFlipV; // قلب المحور العمودي (0/1)
-const uint canvasPooling; // تفعيل توسّع البقعة عند التراكم (0/1)
-const float poolGrowth; // معامل نمو البقعة عند التشبّع
-const uint canvasWetMix; // تفعيل خلط الألوان الرطب (0/1)
-const float wetMixStrength; // قوة الخلط الطرحي (0=متوسط، 1=طرحي كامل)
+const uint canvasResolution;
+const float4 paintColorGPU; 
+const float splatRadiusPixels; 
+const float paintOpacityGPU; 
+const uint canvasFlipU;
+const uint canvasFlipV; 
+const uint canvasPooling;
+const float poolGrowth; 
+const uint canvasWetMix;
+const float wetMixStrength; 
 
 // التجزئة المكانية
 RWStructuredBuffer<uint> CellCounts;
@@ -71,28 +59,26 @@ RWStructuredBuffer<uint> CellEnd;
 RWStructuredBuffer<uint> SortedIndices;
 RWStructuredBuffer<uint> ParticleCellIndex;
 
-// ------------------------------------------------------------
-//  الثوابت (من C#)
-// ------------------------------------------------------------
+// الثوابت الاساسية لمحاكاة السائل
 const uint numParticles;
 const float deltaTime;
 const float gravity;
 const float smoothingRadius;
 
 // معاملات Clavet
-const float restDensity; // كثافة التوازن (طبيعية، ~10)
+const float restDensity; // كثافة التوازن (طبيعية، ~10)غ
 const float stiffness; // صلابة الضغط (k)
 const float nearStiffness; // صلابة الضغط القريب (k_near)
 const float viscosityBeta; // لزوجة تربيعية
 const float viscositySigma; // لزوجة خطية
-const float velocityDamping; // تخميد السرعة (يمتص الدوامة)
+const float velocityDamping; // تخميد السرعة (يمتص الدوامة)غ
 
 const float3 bucketCenter;
 const float4 bucketRotation;
 const float bucketRadius;
 const float bucketHeight;
 const float collisionDamping;
-const float wallRestitution; // معامل ارتداد الجدار (0=بلا ارتداد، صغير=تخميد)
+const float wallRestitution; // معامل ارتداد الجدار (0=بلا ارتداد، صغير=تخميد)ج
 
 const float3 externalAccel;
 
@@ -100,9 +86,9 @@ const uint gridResolution;
 const float gridCellSize;
 const float3 gridMin;
 
-// ============================================================
-//  مساعدات الكواتيرنيون
-// ============================================================
+
+//  مساعدات الكواتيرنيون  السطل يتأرجح ويدور. للتعامل مع التصادم، نحوّل موقع الجسيم لـ فضاء السطل المحلي (باستخدام معكوس دوران السطل)، نطبّق التصادم هناك (أبسط — أسطوانة محاذية للمحاور)ي
+
 float3 QuatRotate(float4 q, float3 v)
 {
     float3 u = float3(q.x, q.y, q.z);
@@ -116,9 +102,9 @@ float4 QuatInverse(float4 q)
     return float4(-q.x, -q.y, -q.z, q.w);
 }
 
-// ============================================================
+
 //  مساعدات الشبكة
-// ============================================================
+
 int3 CellCoord(float3 pos)
 {
     return (int3) floor((pos - gridMin) / gridCellSize);
@@ -129,10 +115,10 @@ uint CellHash(int3 c)
     return (uint) (c.x + c.y * gridResolution + c.z * gridResolution * gridResolution);
 }
 
-// ============================================================
+
 //  1. الجاذبية + حفظ الموقع السابق + التحريك المبدئي
 //     (في صيغة Clavet نحرّك أولاً ثم نصحّح بالكثافة)
-// ============================================================
+
 [numthreads(256, 1, 1)]
 void ApplyGravity(uint3 id : SV_DispatchThreadID)
 {
@@ -159,9 +145,9 @@ void ApplyGravity(uint3 id : SV_DispatchThreadID)
     Positions[id.x] += Velocities[id.x] * deltaTime;
 }
 
-// ============================================================
+
 //  2. التجزئة المكانية (counting sort)
-// ============================================================
+
 [numthreads(256, 1, 1)]
 void ClearGrid(uint3 id : SV_DispatchThreadID)
 {
@@ -206,18 +192,18 @@ void ScatterParticles(uint3 id : SV_DispatchThreadID)
     SortedIndices[dst] = id.x;
 }
 
-// ============================================================
+
 //  3. Double-Density Relaxation (قلب صيغة Clavet)
 //     لكل جسيم: احسب الكثافة والكثافة القريبة، ثم الضغطين،
-//     ثم أزح الجيران والجسيم نفسه مباشرةً (تصحيح موقع).
-// ============================================================
+//     ثم أزح الجيران والجسيم نفسه مباشرةً (تصحيح موقع).ه
+
 [numthreads(256, 1, 1)]
 void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numParticles)
         return;
     if (States[id.x] == 1)
-        return; // القطرات الحرة لا تشارك في ضغط السائل
+        return; // الحرة مالها علاقة بالضغط مبدئيا
 
     float3 pos = Positions[id.x];
     int3 baseCell = CellCoord(pos);
@@ -256,7 +242,7 @@ void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
                 }
             }
 
-    // --- الضغطان ---
+    // الضغطان 
     float pressure = stiffness * (density - restDensity);
     float nearPressure = nearStiffness * nearDensity;
 
@@ -279,7 +265,7 @@ void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
                     if (j == id.x)
                         continue;
                     if (States[j] == 1)
-                        continue; // لا إزاحة من/نحو القطرات الحرة
+                        continue; // الحرة مالها ازاحة
                     float3 diff = Positions[j] - pos;
                     float r = length(diff);
                     if (r < h && r > 0)
@@ -296,9 +282,9 @@ void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
     Positions[id.x] = pos + dispSelf;
 }
 
-// ============================================================
+
 //  4. حساب السرعة من تغيّر الموقع + حدود السطل
-// ============================================================
+
 [numthreads(256, 1, 1)]
 void ComputeVelocity(uint3 id : SV_DispatchThreadID)
 {
@@ -306,7 +292,7 @@ void ComputeVelocity(uint3 id : SV_DispatchThreadID)
         return;
 
     // المستهلكة (2) والمرسومة (4): مخبّأة ومتجمّدة
-    // لكن state=3 (وصلت، تنتظر الرسم) تبقى بموقعها ليرسمها PaintOnCanvas
+    
     if (States[id.x] == 2 || States[id.x] == 4)
     {
         Velocities[id.x] = float3(0, 0, 0);
@@ -315,23 +301,23 @@ void ComputeVelocity(uint3 id : SV_DispatchThreadID)
     }
     if (States[id.x] == 3)
     {
-        // ثابتة على السطح، تنتظر الرسم (لا تتحرك)
+        // ثابتة على السطح، تنتظر الرسم (لا تتحرك)ه
         Velocities[id.x] = float3(0, 0, 0);
         return;
     }
 
-    // السرعة = (الموقع الجديد - السابق) / dt  (يلتقط تصحيح الكثافة)
+    // السرعة = (الموقع الجديد - السابق)خ / dt  (يلتقط تصحيح الكثافة)
     float3 newPos = Positions[id.x];
     if (deltaTime > 0)
         Velocities[id.x] = (newPos - PrevPositions[id.x]) / deltaTime;
 
-    // تخميد بسيط: يمتص الحركة الزائدة (بما فيها الدوامة المصطنعة)
+    // تخميد بسيط: يمتص الحركة الزائدة (بما فيها الدوامة المصطنعة)ه
     Velocities[id.x] *= velocityDamping;
 
     // القطرات الحرة: فحص وصول اللوحة + تسقط بحرية بلا حدود سطل
     if (States[id.x] == 1)
     {
-        // التقط القطرة لو وصلت أو عبرت مستوى اللوحة (تمنع الاختراق)
+        // التاقط القطرة لو وصلت أو عبرت مستوى اللوحة (توقف الاختراق)ع
         // نفحص الموقع الحالي والسابق: لو عبرت المستوى بينهما
         float prevY = PrevPositions[id.x].y;
         bool crossed = (newPos.y <= canvasY) || (prevY > canvasY && newPos.y <= canvasY);
@@ -341,19 +327,19 @@ void ComputeVelocity(uint3 id : SV_DispatchThreadID)
             float dz = abs(newPos.z - canvasCenter.z);
             if (dx <= canvasHalfSize.x && dz <= canvasHalfSize.y)
             {
-                // ثبّت الموقع عند سطح اللوحة بالضبط (نقطة الرسم دقيقة)
+                // ثبّت الموقع عند سطح اللوحة بالضبط (نقطة الرسم دقيقة)ه
                 float3 splatPos = float3(newPos.x, canvasY, newPos.z);
                 Positions[id.x] = splatPos;
                 Velocities[id.x] = float3(0, 0, 0);
                 States[id.x] = 3; // وصلت اللوحة
-                // اكتب موقع الرسم الصحيح فوراً (لا يعتمد على readback متأخر)
+               
                 SplatPoints.Append(splatPos);
             }
         }
         return;
     }
 
-    // --- حدود السطل (أسطوانة، مفتوحة من الأعلى) ---
+    // حدود السطل
     float4 invRot = QuatInverse(bucketRotation);
     float3 local = QuatRotate(invRot, newPos - bucketCenter);
     float3 localVel = QuatRotate(invRot, Velocities[id.x]);
@@ -361,11 +347,11 @@ void ComputeVelocity(uint3 id : SV_DispatchThreadID)
     float bottomY = -bucketHeight * 0.5;
     bool changed = false;
 
-    // القاع فقط (لا سقف — السطل مفتوح من فوق)
+    // القاع فقط (لا سقف — السطل مفتوح من فوق)ه
     if (local.y < bottomY)
     {
         local.y = bottomY;
-        // ارتداد مخمّد: السرعة العمودية تنعكس مضروبة بمعامل صغير (<1)
+        // ارتداد مخمّد: السرعة العمودية تنعكس مضروبة بمعامل صغير (<1)ه
         localVel.y = abs(localVel.y) * wallRestitution;
         changed = true;
     }
@@ -396,9 +382,9 @@ void ComputeVelocity(uint3 id : SV_DispatchThreadID)
     }
 }
 
-// ============================================================
-//  5. فحص الثقوب: تحويل الجزيئات القريبة من ثقب إلى قطرات حرة
-// ============================================================
+
+//  5. تحويل الجزيئات القريبة من ثقب إلى قطرات حرة
+
 [numthreads(256, 1, 1)]
 void CheckHoles(uint3 id : SV_DispatchThreadID)
 {
@@ -441,10 +427,10 @@ void CheckHoles(uint3 id : SV_DispatchThreadID)
     }
 }
 
-// ============================================================
+
 //  6. دوامة التصريف: جذب + التفاف حول الثقوب
 //     السائل القريب من ثقب ينجذب له ويلتفّ حوله (whirlpool)
-// ============================================================
+
 [numthreads(256, 1, 1)]
 void ApplyVortex(uint3 id : SV_DispatchThreadID)
 {
@@ -471,13 +457,13 @@ void ApplyVortex(uint3 id : SV_DispatchThreadID)
 
         if (dist < range && dist > 0.0001)
         {
-            // محور الدوامة = اتجاه الثقب من المركز (نورمال الثقب)
+            // 
             float3 axis = normalize(holePos);
             if (length(holePos) < 0.0001)
                 axis = float3(0, 1, 0);
 
             float3 radialDir = toHole / dist; // نحو الثقب
-            // عامل القوة: يزداد كلما اقترب (1 عند الثقب، 0 عند الحافة)
+            // عامل القوة: يزداد كلما اقترب (1 عند الثقب، 0 عند الحافة)ه
             float strength = 1.0 - (dist / range);
             strength = strength * strength; // تركيز أقوى قرب المركز
 
@@ -496,10 +482,8 @@ void ApplyVortex(uint3 id : SV_DispatchThreadID)
         Velocities[id.x] = QuatRotate(bucketRotation, localVel);
 }
 
-// ============================================================
-//  7. الرسم على اللوحة مباشرة على GPU (صفر تأخير)
-//     كل جسيم وصل اللوحة (state=3) يرسم بقعة على التكستشر فوراً
-// ============================================================
+// state 3 رسم مباشر على اللوحة مشان التاخير
+
 [numthreads(256, 1, 1)]
 void PaintOnCanvas(uint3 id : SV_DispatchThreadID)
 {
@@ -509,15 +493,14 @@ void PaintOnCanvas(uint3 id : SV_DispatchThreadID)
         return; // فقط القطرات الواصلة الجديدة
 
     float3 pos = Positions[id.x];
-    // لون هذا الجسيم (يدعم ألوان متعددة)
+    // لون هذا الجسيم (يدعم ألوان متعددة)ه
     float4 dropColor = ParticleColors[id.x];
 
-    // حوّل موقع العالم إلى إحداثيات UV على اللوحة [0,1]
+    // حوّل موقع العالم إلى إحداثيات UV على اللوحة [0,1]ه
     float u = (pos.x - canvasCenter.x) / (canvasHalfSize.x * 2.0) + 0.5;
     float v = (pos.z - canvasCenter.z) / (canvasHalfSize.y * 2.0) + 0.5;
 
-    // RenderTexture في Unity: المحور العمودي (Y بالبكسل) مقلوب
-    // نقلب V لمطابقة اتجاه العرض الصحيح
+
     if (canvasFlipV == 1)
         v = 1.0 - v;
     if (canvasFlipU == 1)
@@ -536,10 +519,10 @@ void PaintOnCanvas(uint3 id : SV_DispatchThreadID)
     int r = (int) splatRadiusPixels;
     if (r < 1)
         r = 1;
-    int coreRadius = r; // حجم القطرة الثابت (المركز)
+    int coreRadius = r; // حجم القطرة الثابت (المركز)ه
 
     // التوسّع: البركة تكبر للخارج مع التراكم، لكن المركز يبقى بحجم القطرة
-    // outerRadius = حجم البركة المتوسّعة (تحت)، coreRadius = الطبقة الجديدة (فوق بالنص)
+    // outerRadius = حجم البركة المتوسّعة (تحت)ه، coreRadius = الطبقة الجديدة (فوق بالنص)ه
     int outerRadius = coreRadius;
     if (canvasPooling == 1)
     {
@@ -556,7 +539,7 @@ void PaintOnCanvas(uint3 id : SV_DispatchThreadID)
     }
     int r_draw = outerRadius; // نرسم حتى الحد الخارجي
 
-    // ارسم دائرة ناعمة: البركة الخارجية (تحت) + المركز الكامل (فوق)
+    // ارسم دائرة ناعمة: البركة الخارجية (تحت) + المركز الكامل (فوق)ه
     for (int dy = -r_draw; dy <= r_draw; dy++)
     {
         for (int dx = -r_draw; dx <= r_draw; dx++)
@@ -587,8 +570,8 @@ void PaintOnCanvas(uint3 id : SV_DispatchThreadID)
                 coreFalloff = smoothstep(0.0, 1.0, coreFalloff);
             }
 
-            // البركة الخارجية: شفافية أقل (طبقة رقيقة متوسّعة)
-            // المركز: لون كامل (الطبقة الطازجة)
+            // البركة الخارجية: شفافية أقل (طبقة رقيقة متوسّعة)ه
+            // المركز: لون كامل (الطبقة الطازجة)ه
             float alpha;
             if (inCore)
                 alpha = (coreFalloff > 0.8) ? coreFalloff : paintOpacityGPU * coreFalloff;
@@ -605,7 +588,7 @@ void PaintOnCanvas(uint3 id : SV_DispatchThreadID)
             float4 result;
             if (hasPaint && colorDiff > 0.1 && canvasWetMix == 1)
             {
-                // خلط طرحي واقعي (مثل الدهان)
+                // خلط طرحي واقعي 
                 float3 subtractive = existing.rgb * dropColor.rgb;
                 float3 average = (existing.rgb + dropColor.rgb) * 0.5;
                 float3 mixed = lerp(average, subtractive, wetMixStrength);
@@ -622,5 +605,5 @@ void PaintOnCanvas(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    States[id.x] = 4; // مستهلكة نهائياً
+    States[id.x] = 4;
 }

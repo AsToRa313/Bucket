@@ -1,0 +1,66 @@
+// ضف هاد السطر مع المتغيرات فوق (تحت float3 boxSize;)
+float3 boxCenter;
+
+// استبدل دالة ComputeVelocity بالكامل بهاد الكود:
+[numthreads(256, 1, 1)]
+void ComputeVelocity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    float3 newPos = Positions[id.x];
+    float3 vel = float3(0, 0, 0);
+    
+    if (deltaTime > 0)
+        vel = (newPos - PrevPositions[id.x]) / deltaTime;
+
+    vel *= velocityDamping;
+
+    // --- تصادم متوازي المستطيلات (مضبوط مع موقع الصندوق) ---
+    float3 halfBox = boxSize * 0.5;
+    
+    // تحويل موقع الجزيئة ليكون بالنسبة لمركز الصندوق
+    float3 localPos = newPos - boxCenter;
+
+    // 1. محور X
+    if (localPos.x < -halfBox.x)
+    {
+        localPos.x = -halfBox.x;
+        vel.x = abs(vel.x) * wallRestitution;
+    }
+    else if (localPos.x > halfBox.x)
+    {
+        localPos.x = halfBox.x;
+        vel.x = -abs(vel.x) * wallRestitution;
+    }
+
+    // 2. محور Y
+    if (localPos.y < -halfBox.y)
+    {
+        localPos.y = -halfBox.y;
+        vel.y = abs(vel.y) * wallRestitution;
+    }
+    else if (localPos.y > halfBox.y)
+    {
+        localPos.y = halfBox.y;
+        vel.y = -abs(vel.y) * wallRestitution;
+    }
+
+    // 3. محور Z
+    if (localPos.z < -halfBox.z)
+    {
+        localPos.z = -halfBox.z;
+        vel.z = abs(vel.z) * wallRestitution;
+    }
+    else if (localPos.z > halfBox.z)
+    {
+        localPos.z = halfBox.z;
+        vel.z = -abs(vel.z) * wallRestitution;
+    }
+
+    // إرجاع الجزيئة لموقعها الصحيح في العالم بعد التصحيح
+    newPos = boxCenter + localPos;
+
+    Positions[id.x] = newPos;
+    Velocities[id.x] = vel;
+}
