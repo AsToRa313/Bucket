@@ -436,6 +436,7 @@ MonoBehaviour:
   particleSize: 0.05
   colorSlow: {r: 0.1, g: 0.4, b: 0.9, a: 1}
   colorFast: {r: 1, g: 0.3, b: 0, a: 1}
+  useUnifiedColor: 1
   speedScale: 3
 --- !u!114 &1925391032
 MonoBehaviour:

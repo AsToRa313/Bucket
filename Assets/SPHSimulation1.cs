@@ -41,6 +41,22 @@ public class SPHSimulation1 : MonoBehaviour
     [Range(0f, 1f)]
     public float initialFillRatio = 0.8f;
 
+    [Header("Demo: Two Droplets (وضع القطرتين)")]
+    [Tooltip("تفعيل وضع القطرتين: يهيّئ الجسيمات كقطرتين بلونين بدل ملء السطل")]
+    public bool twoDropletsMode = false;
+    [Tooltip("لون القطرة الأولى")]
+    public Color dropletColor1 = new Color(0.9f, 0.15f, 0.15f, 1f);
+    [Tooltip("لون القطرة الثانية")]
+    public Color dropletColor2 = new Color(0.15f, 0.3f, 0.95f, 1f);
+    [Tooltip("نصف قطر كل قطرة")]
+    public float dropletRadius = 0.3f;
+    [Tooltip("المسافة الأفقية بين القطرتين")]
+    public float dropletSeparation = 0.5f;
+    [Tooltip("ارتفاع القطرتين فوق مركز السطل")]
+    public float dropletHeight = 1.5f;
+    [Tooltip("سرعة تقارب القطرتين نحو بعض (تضمن اللقاء والاندماج)")]
+    public float dropletApproachSpeed = 0.8f;
+
     [System.Serializable]
     public struct DrainHole
     {
@@ -231,6 +247,13 @@ public class SPHSimulation1 : MonoBehaviour
 
     void InitializeParticles()
     {
+        // وضع القطرتين للعرض التوضيحي: قطرتان بلونين بدل ملء السطل
+        if (twoDropletsMode)
+        {
+            InitializeTwoDroplets();
+            return;
+        }
+
         float fill = pendulum != null ? pendulum.GetFillRatio() : initialFillRatio;
         fill = Mathf.Clamp01(fill <= 0f ? initialFillRatio : fill);
 
@@ -286,6 +309,56 @@ public class SPHSimulation1 : MonoBehaviour
         {
             restDensity = EstimateRestDensity(positions);
             Debug.Log($"[SPH] restDensity محسوبة تلقائياً = {restDensity:F2}");
+        }
+    }
+
+    // تهيئة القطرتين: مجموعتان كرويتان بلونين مختلفين (للعرض التوضيحي)
+    void InitializeTwoDroplets()
+    {
+        Vector3 center = bucketTransform != null ? bucketTransform.position : Vector3.zero;
+
+        var positions = new Vector3[numParticles];
+        var velocities = new Vector3[numParticles];
+        var colors = new Vector4[numParticles];
+
+        int half = numParticles / 2;
+        Vector3 c1 = center + new Vector3(-dropletSeparation * 0.5f, dropletHeight, 0);
+        Vector3 c2 = center + new Vector3(dropletSeparation * 0.5f, dropletHeight, 0);
+        Vector4 col1 = new Vector4(dropletColor1.r, dropletColor1.g, dropletColor1.b, 1f);
+        Vector4 col2 = new Vector4(dropletColor2.r, dropletColor2.g, dropletColor2.b, 1f);
+
+        for (int i = 0; i < numParticles; i++)
+        {
+            bool first = i < half;
+            Vector3 dropCenter = first ? c1 : c2;
+            // توزيع عشوائي داخل كرة
+            Vector3 p;
+            do
+            {
+                p = new Vector3(Random.Range(-1f, 1f), Random.Range(-1f, 1f), Random.Range(-1f, 1f));
+            } while (p.sqrMagnitude > 1f);
+            positions[i] = dropCenter + p * dropletRadius;
+            // سرعة تقارب ابتدائية: كل قطرة تتجه نحو الأخرى (تضمن اللقاء)
+            float toward = first ? dropletApproachSpeed : -dropletApproachSpeed;
+            velocities[i] = new Vector3(toward, 0f, 0f);
+            colors[i] = first ? col1 : col2;
+        }
+
+        positionBuffer.SetData(positions);
+        prevPositionBuffer.SetData(positions);
+        velocityBuffer.SetData(velocities);
+
+        // كل الجسيمات حرة (state=0 يكفي - بدون سطل فعلي، الحدود واسعة)
+        var states = new uint[numParticles];
+        stateBuffer.SetData(states);
+
+        colorBuffer = new ComputeBuffer(numParticles, sizeof(float) * 4);
+        colorBuffer.SetData(colors);
+
+        if (autoRestDensity)
+        {
+            restDensity = EstimateRestDensity(positions);
+            Debug.Log($"[SPH] وضع القطرتين - restDensity = {restDensity:F2}");
         }
     }
 

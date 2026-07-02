@@ -1,0 +1,276 @@
+// ============================================================
+//  FluidBox.compute  (نسخة آمنة ضد الانفجار)
+//  محاكاة سائل Clavet داخل صندوق مستطيل - للعرض التوضيحي
+// ============================================================
+#pragma kernel Integrate
+#pragma kernel ClearGrid
+#pragma kernel CountParticles
+#pragma kernel PrefixSum
+#pragma kernel ScatterParticles
+#pragma kernel DoubleDensity
+#pragma kernel ComputeVelocity
+
+RWStructuredBuffer<float3> Positions;
+RWStructuredBuffer<float3> Velocities;
+RWStructuredBuffer<float3> PrevPositions;
+
+RWStructuredBuffer<uint> CellCounts;
+RWStructuredBuffer<uint> CellStart;
+RWStructuredBuffer<uint> CellEnd;
+RWStructuredBuffer<uint> SortedIndices;
+RWStructuredBuffer<uint> ParticleCellIndex;
+
+uint numParticles;
+float deltaTime;
+float gravity;
+float smoothingRadius;
+float restDensity;
+float stiffness;
+float nearStiffness;
+float velocityDamping;
+
+float3 boxMin;
+float3 boxMax;
+float collisionDamping;
+float3 shakeAccel;
+
+float3 gridOrigin;
+float cellSize;
+uint3 gridResolution;
+uint numCells;
+
+uint3 CellCoord(float3 pos)
+{
+    float3 local = (pos - gridOrigin) / cellSize;
+    int3 c = int3(floor(local));
+    c = clamp(c, int3(0, 0, 0), int3(gridResolution) - int3(1, 1, 1));
+    return (uint3) c;
+}
+
+uint CellHash(uint3 c)
+{
+    return c.x + c.y * gridResolution.x + c.z * gridResolution.x * gridResolution.y;
+}
+
+// ============================================================
+//  1. جاذبية + اهتزاز (مرة واحدة كل إطار)
+// ============================================================
+[numthreads(256, 1, 1)]
+void Integrate(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    PrevPositions[id.x] = Positions[id.x];
+
+    float3 vel = Velocities[id.x];
+    vel += (float3(0, -gravity, 0) + shakeAccel) * deltaTime;
+    vel *= velocityDamping;
+
+    // حماية: حدّ أقصى للسرعة (يمنع الانفجار)
+    float maxSpeed = 20.0;
+    float speed = length(vel);
+    if (speed > maxSpeed)
+        vel = vel / speed * maxSpeed;
+
+    Velocities[id.x] = vel;
+    Positions[id.x] += vel * deltaTime;
+}
+
+// ============================================================
+//  2-5. شبكة الجيران
+// ============================================================
+[numthreads(256, 1, 1)]
+void ClearGrid(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numCells)
+        return;
+    CellCounts[id.x] = 0;
+    CellStart[id.x] = 0;
+    CellEnd[id.x] = 0;
+}
+
+[numthreads(256, 1, 1)]
+void CountParticles(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    uint3 c = CellCoord(Positions[id.x]);
+    uint h = CellHash(c);
+    ParticleCellIndex[id.x] = h;
+    InterlockedAdd(CellCounts[h], 1);
+}
+
+[numthreads(1, 1, 1)]
+void PrefixSum(uint3 id : SV_DispatchThreadID)
+{
+    uint sum = 0;
+    for (uint i = 0; i < numCells; i++)
+    {
+        CellStart[i] = sum;
+        sum += CellCounts[i];
+        CellEnd[i] = sum;
+    }
+}
+
+[numthreads(256, 1, 1)]
+void ScatterParticles(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    uint h = ParticleCellIndex[id.x];
+    uint idx;
+    InterlockedAdd(CellStart[h], 1, idx);
+    if (idx < numParticles)
+        SortedIndices[idx] = id.x;
+}
+
+// ============================================================
+//  6. الكثافة المزدوجة (Clavet)
+// ============================================================
+[numthreads(256, 1, 1)]
+void DoubleDensity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    float3 pos = Positions[id.x];
+    uint3 cc = CellCoord(pos);
+
+    float density = 0;
+    float nearDensity = 0;
+
+    // مرور أول: الكثافة
+    for (int dz = -1; dz <= 1; dz++)
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                int3 nc = int3(cc) + int3(dx, dy, dz);
+                if (nc.x < 0 || nc.y < 0 || nc.z < 0)
+                    continue;
+                if (nc.x >= (int) gridResolution.x || nc.y >= (int) gridResolution.y || nc.z >= (int) gridResolution.z)
+                    continue;
+
+                uint h = CellHash((uint3) nc);
+                uint cnt = CellCounts[h];
+                uint start = CellEnd[h] - cnt;
+                uint end = CellEnd[h];
+                for (uint i = start; i < end; i++)
+                {
+                    uint j = SortedIndices[i];
+                    if (j >= numParticles || j == id.x)
+                        continue;
+                    float3 diff = Positions[j] - pos;
+                    float dist = length(diff);
+                    float q = dist / smoothingRadius;
+                    if (q < 1.0)
+                    {
+                        float oneMinusQ = 1.0 - q;
+                        density += oneMinusQ * oneMinusQ;
+                        nearDensity += oneMinusQ * oneMinusQ * oneMinusQ;
+                    }
+                }
+            }
+
+    float pressure = stiffness * (density - restDensity);
+    float nearPressure = nearStiffness * nearDensity;
+
+    // مرور ثاني: الإزاحة
+    float3 posDelta = float3(0, 0, 0);
+    for (int dz2 = -1; dz2 <= 1; dz2++)
+        for (int dy2 = -1; dy2 <= 1; dy2++)
+            for (int dx2 = -1; dx2 <= 1; dx2++)
+            {
+                int3 nc = int3(cc) + int3(dx2, dy2, dz2);
+                if (nc.x < 0 || nc.y < 0 || nc.z < 0)
+                    continue;
+                if (nc.x >= (int) gridResolution.x || nc.y >= (int) gridResolution.y || nc.z >= (int) gridResolution.z)
+                    continue;
+
+                uint h = CellHash((uint3) nc);
+                uint cnt = CellCounts[h];
+                uint start = CellEnd[h] - cnt;
+                uint end = CellEnd[h];
+                for (uint i = start; i < end; i++)
+                {
+                    uint j = SortedIndices[i];
+                    if (j >= numParticles || j == id.x)
+                        continue;
+                    float3 diff = Positions[j] - pos;
+                    float dist = length(diff);
+                    float q = dist / smoothingRadius;
+                    if (q < 1.0 && dist > 0.0001)
+                    {
+                        float oneMinusQ = 1.0 - q;
+                        float displaceMag = (pressure * oneMinusQ + nearPressure * oneMinusQ * oneMinusQ) * deltaTime * deltaTime;
+                        float3 dir = diff / dist;
+                        posDelta -= dir * displaceMag * 0.5;
+                    }
+                }
+            }
+
+    // حماية: حدّ أقصى للإزاحة (يمنع القفزات الضخمة)
+    float maxDelta = smoothingRadius * 0.5;
+    float dmag = length(posDelta);
+    if (dmag > maxDelta)
+        posDelta = posDelta / dmag * maxDelta;
+
+    Positions[id.x] += posDelta;
+
+    // حدود الصندوق
+    float3 p = Positions[id.x];
+    if (p.x < boxMin.x)
+    {
+        p.x = boxMin.x;
+        Velocities[id.x].x *= -collisionDamping;
+    }
+    if (p.x > boxMax.x)
+    {
+        p.x = boxMax.x;
+        Velocities[id.x].x *= -collisionDamping;
+    }
+    if (p.y < boxMin.y)
+    {
+        p.y = boxMin.y;
+        Velocities[id.x].y *= -collisionDamping;
+    }
+    if (p.y > boxMax.y)
+    {
+        p.y = boxMax.y;
+        Velocities[id.x].y *= -collisionDamping;
+    }
+    if (p.z < boxMin.z)
+    {
+        p.z = boxMin.z;
+        Velocities[id.x].z *= -collisionDamping;
+    }
+    if (p.z > boxMax.z)
+    {
+        p.z = boxMax.z;
+        Velocities[id.x].z *= -collisionDamping;
+    }
+
+    // حماية نهائية: لو صار NaN أو خارج حدود منطقية، أرجعه للمركز
+    float3 boxCenter = (boxMin + boxMax) * 0.5;
+    if (any(isnan(p)) || any(isinf(p)))
+        p = boxCenter;
+    Positions[id.x] = p;
+}
+
+// ============================================================
+//  7. تحديث السرعة من تغيّر الموقع
+// ============================================================
+[numthreads(256, 1, 1)]
+void ComputeVelocity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    if (deltaTime > 0)
+    {
+        float3 vel = (Positions[id.x] - PrevPositions[id.x]) / deltaTime;
+        // حماية
+        if (any(isnan(vel)) || any(isinf(vel)))
+            vel = float3(0, 0, 0);
+        Velocities[id.x] = vel;
+    }
+}
