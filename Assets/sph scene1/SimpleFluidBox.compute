@@ -1,0 +1,251 @@
+#pragma kernel ApplyGravity
+#pragma kernel ClearGrid
+#pragma kernel CountParticles
+#pragma kernel PrefixSumNaive
+#pragma kernel ScatterParticles
+#pragma kernel DoubleDensityRelax
+#pragma kernel ComputeVelocity
+
+uint numParticles;
+float deltaTime;
+float gravity;
+float smoothingRadius;
+
+float restDensity;
+float stiffness;
+float nearStiffness;
+float velocityDamping;
+float wallRestitution;
+
+float3 boxSize;
+float3 boxCenter;
+
+int gridResolution;
+float gridCellSize;
+float3 gridMin;
+
+RWStructuredBuffer<float3> Positions;
+RWStructuredBuffer<float3> PrevPositions;
+RWStructuredBuffer<float3> Velocities;
+
+RWStructuredBuffer<uint> CellCounts;
+RWStructuredBuffer<uint> CellStart;
+RWStructuredBuffer<uint> CellEnd;
+RWStructuredBuffer<uint> SortedIndices;
+RWStructuredBuffer<uint> ParticleCellIndex;
+
+int3 GetCell3D(float3 pos)
+{
+    float3 local = pos - gridMin;
+    int3 cell = floor(local / gridCellSize);
+    return clamp(cell, 0, gridResolution - 1);
+}
+
+uint GetCellHash(int3 cell)
+{
+    return cell.x + cell.y * gridResolution + cell.z * gridResolution * gridResolution;
+}
+
+[numthreads(256, 1, 1)]
+void ApplyGravity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    
+    PrevPositions[id.x] = Positions[id.x];
+    Velocities[id.x].y -= gravity * deltaTime;
+    Positions[id.x] += Velocities[id.x] * deltaTime;
+}
+
+[numthreads(256, 1, 1)]
+void ClearGrid(uint3 id : SV_DispatchThreadID)
+{
+    uint numCells = gridResolution * gridResolution * gridResolution;
+    if (id.x >= numCells)
+        return;
+    CellCounts[id.x] = 0;
+}
+
+[numthreads(256, 1, 1)]
+void CountParticles(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    int3 cell = GetCell3D(Positions[id.x]);
+    uint hash = GetCellHash(cell);
+    ParticleCellIndex[id.x] = hash;
+    InterlockedAdd(CellCounts[hash], 1);
+}
+
+[numthreads(1, 1, 1)]
+void PrefixSumNaive(uint3 id : SV_DispatchThreadID)
+{
+    uint numCells = gridResolution * gridResolution * gridResolution;
+    uint sum = 0;
+    for (uint i = 0; i < numCells; i++)
+    {
+        CellStart[i] = sum;
+        sum += CellCounts[i];
+        CellEnd[i] = CellStart[i];
+    }
+}
+
+[numthreads(256, 1, 1)]
+void ScatterParticles(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    uint hash = ParticleCellIndex[id.x];
+    uint dst;
+    InterlockedAdd(CellEnd[hash], 1, dst);
+    SortedIndices[dst] = id.x;
+}
+
+[numthreads(256, 1, 1)]
+void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    float3 pos = Positions[id.x];
+    float density = 0;
+    float nearDensity = 0;
+    float h = smoothingRadius;
+
+    int3 cell = GetCell3D(pos);
+
+    for (int z = -1; z <= 1; z++)
+    {
+        for (int y = -1; y <= 1; y++)
+        {
+            for (int x = -1; x <= 1; x++)
+            {
+                int3 nCell = cell + int3(x, y, z);
+                if (nCell.x < 0 || nCell.x >= gridResolution ||
+                    nCell.y < 0 || nCell.y >= gridResolution ||
+                    nCell.z < 0 || nCell.z >= gridResolution)
+                    continue;
+
+                uint hash = GetCellHash(nCell);
+                uint start = CellStart[hash];
+                uint end = CellEnd[hash];
+
+                for (uint i = start; i < end; i++)
+                {
+                    uint nIndex = SortedIndices[i];
+                    if (nIndex == id.x)
+                        continue;
+
+                    float3 toNeighbor = Positions[nIndex] - pos;
+                    float dist = length(toNeighbor);
+                    if (dist < h && dist > 0)
+                    {
+                        float q = 1.0 - (dist / h);
+                        density += q * q;
+                        nearDensity += q * q * q;
+                    }
+                }
+            }
+        }
+    }
+
+    float pressure = stiffness * (density - restDensity);
+    float nearPressure = nearStiffness * nearDensity;
+    float3 displacement = float3(0, 0, 0);
+
+    for (int z = -1; z <= 1; z++)
+    {
+        for (int y = -1; y <= 1; y++)
+        {
+            for (int x = -1; x <= 1; x++)
+            {
+                int3 nCell = cell + int3(x, y, z);
+                if (nCell.x < 0 || nCell.x >= gridResolution ||
+                    nCell.y < 0 || nCell.y >= gridResolution ||
+                    nCell.z < 0 || nCell.z >= gridResolution)
+                    continue;
+
+                uint hash = GetCellHash(nCell);
+                uint start = CellStart[hash];
+                uint end = CellEnd[hash];
+
+                for (uint i = start; i < end; i++)
+                {
+                    uint nIndex = SortedIndices[i];
+                    if (nIndex == id.x)
+                        continue;
+
+                    float3 toNeighbor = Positions[nIndex] - pos;
+                    float dist = length(toNeighbor);
+                    if (dist < h && dist > 0)
+                    {
+                        float q = 1.0 - (dist / h);
+                        float d = (pressure * q + nearPressure * q * q) * deltaTime * deltaTime * 0.5;
+                        displacement -= normalize(toNeighbor) * d;
+                    }
+                }
+            }
+        }
+    }
+
+    Positions[id.x] += displacement;
+}
+
+[numthreads(256, 1, 1)]
+void ComputeVelocity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    float3 newPos = Positions[id.x];
+    float3 vel = float3(0, 0, 0);
+    
+    if (deltaTime > 0)
+        vel = (newPos - PrevPositions[id.x]) / deltaTime;
+
+    vel *= velocityDamping;
+
+    float3 halfBox = boxSize * 0.5;
+    
+    // تحويل للإحداثيات المحلية بالنسبة لمركز الصندوق
+    float3 localPos = newPos - boxCenter;
+
+    if (localPos.x < -halfBox.x)
+    {
+        localPos.x = -halfBox.x;
+        vel.x = abs(vel.x) * wallRestitution;
+    }
+    else if (localPos.x > halfBox.x)
+    {
+        localPos.x = halfBox.x;
+        vel.x = -abs(vel.x) * wallRestitution;
+    }
+
+    if (localPos.y < -halfBox.y)
+    {
+        localPos.y = -halfBox.y;
+        vel.y = abs(vel.y) * wallRestitution;
+    }
+    else if (localPos.y > halfBox.y)
+    {
+        localPos.y = halfBox.y;
+        vel.y = -abs(vel.y) * wallRestitution;
+    }
+
+    if (localPos.z < -halfBox.z)
+    {
+        localPos.z = -halfBox.z;
+        vel.z = abs(vel.z) * wallRestitution;
+    }
+    else if (localPos.z > halfBox.z)
+    {
+        localPos.z = halfBox.z;
+        vel.z = -abs(vel.z) * wallRestitution;
+    }
+
+    // الإرجاع لإحداثيات العالم
+    newPos = boxCenter + localPos;
+
+    Positions[id.x] = newPos;
+    Velocities[id.x] = vel;
+}

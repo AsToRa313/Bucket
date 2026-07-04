@@ -204,8 +204,8 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 502229547}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.27247238, y: 0.015874743, z: -0.004496237, w: 0.9620221}
-  m_LocalPosition: {x: -0.1993797, y: 2.5733497, z: -8.918184}
+  m_LocalRotation: {x: 0.23769625, y: 0.0072849137, z: -0.0017828014, w: 0.97131056}
+  m_LocalPosition: {x: 0.2560057, y: 5.5903125, z: -12.88904}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -515,16 +515,16 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SPHSimulation1
   compute: {fileID: 7200000, guid: b3ba207ba05499b46896ceeec3d1f8fc, type: 3}
-  numParticles: 1000
+  numParticles: 100000
   iterations: 4
-  smoothingRadius: 0.08
+  smoothingRadius: 0.015
   autoRestDensity: 1
   restDensity: 10
-  stiffness: 0.1
-  nearStiffness: 0.1
+  stiffness: 0.05
+  nearStiffness: 0.05
   velocityDamping: 0.995
   gravity: 9.81
-  maxInertiaAccel: 30
+  maxInertiaAccel: 5
   collisionDamping: 0.4
   wallRestitution: 0.1
   pendulum: {fileID: 811034506}
@@ -533,8 +533,8 @@ MonoBehaviour:
   bucketHeight: 0.6
   initialFillRatio: 0.8
   twoDropletsMode: 0
-  dropletColor1: {r: 0.9, g: 0.15, b: 0.15, a: 1}
-  dropletColor2: {r: 0.15, g: 0.3, b: 0.95, a: 1}
+  dropletColor1: {r: 0.8211382, g: 0.14901961, b: 0.9019608, a: 1}
+  dropletColor2: {r: 0.14901961, g: 0.9273022, b: 0.9490196, a: 1}
   dropletRadius: 0.3
   dropletSeparation: 0.5
   dropletHeight: 1.5

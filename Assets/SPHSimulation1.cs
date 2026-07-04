@@ -1,6 +1,10 @@
 using UnityEngine;
+using System.Collections.Generic;
 
-
+/// <summary>
+/// مدير محاكاة سوائل على GPU بصيغة Clavet (Double-Density Relaxation).
+/// يوفّر GetPositionBuffer/GetVelocityBuffer/GetParticleCount للـ SPHRenderer.
+/// </summary>
 public class SPHSimulation1 : MonoBehaviour
 {
     [Header("Compute Shader")]
@@ -23,7 +27,7 @@ public class SPHSimulation1 : MonoBehaviour
     public float velocityDamping = 0.98f;
     public float gravity = 9.81f;
     [Tooltip("سقف قوة القصور من حركة السطل (يمنع انفجار السائل عند السحب المفاجئ)")]
-    public float maxInertiaAccel = 30f;
+    public float maxInertiaAccel = 1f;
     [Range(0f, 1f)]
     public float collisionDamping = 0.4f;
     [Tooltip("ارتداد الجزيئات عن الجدران (0=تلتصق، 0.1-0.3=ارتداد خفيف). قيمة عالية تسبب تسارع عند الحواف")]
@@ -138,11 +142,23 @@ public class SPHSimulation1 : MonoBehaviour
     ComputeBuffer cellEndBuffer;
     ComputeBuffer sortedIndicesBuffer;
     ComputeBuffer particleCellIndexBuffer;
+    ComputeBuffer blockSumsBuffer;   // مجاميع الكتل لـ prefix sum المتوازي
+    // buffers إعادة الترتيب (Reorder)
+    ComputeBuffer sortedPositionsBuffer, sortedPrevPositionsBuffer, sortedVelocitiesBuffer, sortedStatesBuffer, sortedColorsBuffer;
+
+    // buffers الهدف لإعادة الترتيب (Reorder)
+    ComputeBuffer sortedPositionBuffer;
+    ComputeBuffer sortedPrevPositionBuffer;
+    ComputeBuffer sortedVelocityBuffer;
+    ComputeBuffer sortedStateBuffer;
+    ComputeBuffer sortedColorBuffer;
 
     int gridResolution, numCells;
     Vector3 gridMin;
 
-    int kGravity, kClearGrid, kCount, kPrefix, kScatter, kRelax, kVelocity, kCheckHoles, kVortex, kPaintCanvas;
+    int kGravity, kClearGrid, kCount, kScanBlocks, kScanBlockSums, kScanCombine, kScatter;
+    int kReorderPosVel, kReorderStateColor, kReorderCopyBackPosVel, kReorderCopyBackStateColor;
+    int kRelax, kVelocity, kCheckHoles, kVortex, kPaintCanvas;
     const int THREADS = 256;
 
     RenderTexture canvasRT;   // تكستشر اللوحة القابل للكتابة من GPU
@@ -190,18 +206,27 @@ public class SPHSimulation1 : MonoBehaviour
 
     void SetupGrid()
     {
-        float worldSize = Mathf.Max(bucketRadius * 2f, bucketHeight) * 2f;
-        gridResolution = Mathf.Max(4, Mathf.CeilToInt(worldSize / smoothingRadius));
-        // سقف صارم: PrefixSum تسلسلي، شبكة كبيرة تخنق الأداء
-        // 16³=4096 خلية معقول للمسح التسلسلي
-        gridResolution = Mathf.Min(gridResolution, 16);
+        // الشبكة يجب أن تغطّي منطقة السائل كاملة (السطل + هامش للقطرات)
+        float worldSize = Mathf.Max(bucketRadius * 2f, bucketHeight) * 2.5f;
+
+        // نريد عدد خلايا ≈ عدد الجسيمات (تجنّب التكدّس)، بحد أقصى 48³
+        int cap = 48;
+        int desiredRes = Mathf.CeilToInt(Mathf.Pow(numParticles, 1f / 3f)) + 2;
+        gridResolution = Mathf.Clamp(desiredRes, 8, cap);
+
+        // حجم الخلية = حجم المنطقة / عدد الخلايا (يضمن تغطية كاملة)
+        gridCellSize = worldSize / gridResolution;
+        // لكن حجم الخلية يجب ألا يقل عن smoothingRadius (وإلا نفوّت جيران)
+        gridCellSize = Mathf.Max(gridCellSize, smoothingRadius);
+
         numCells = gridResolution * gridResolution * gridResolution;
     }
+    float gridCellSize;
 
     void UpdateGridOrigin()
     {
         Vector3 c = bucketTransform != null ? bucketTransform.position : Vector3.zero;
-        float half = gridResolution * smoothingRadius * 0.5f;
+        float half = gridResolution * gridCellSize * 0.5f;
         gridMin = c - new Vector3(half, half, half);
     }
 
@@ -221,6 +246,22 @@ public class SPHSimulation1 : MonoBehaviour
         cellEndBuffer = new ComputeBuffer(numCells, sizeof(uint));
         sortedIndicesBuffer = new ComputeBuffer(numParticles, sizeof(uint));
         particleCellIndexBuffer = new ComputeBuffer(numParticles, sizeof(uint));
+        // مجاميع الكتل: عدد الكتل = ceil(numCells / 256)
+        int numBlocks = Mathf.CeilToInt(numCells / 256f);
+        blockSumsBuffer = new ComputeBuffer(numBlocks, sizeof(uint));
+        // buffers إعادة الترتيب (نفس أحجام الجسيمات)
+        sortedPositionsBuffer = new ComputeBuffer(numParticles, sizeof(float) * 3);
+        sortedPrevPositionsBuffer = new ComputeBuffer(numParticles, sizeof(float) * 3);
+        sortedVelocitiesBuffer = new ComputeBuffer(numParticles, sizeof(float) * 3);
+        sortedStatesBuffer = new ComputeBuffer(numParticles, sizeof(uint));
+        sortedColorsBuffer = new ComputeBuffer(numParticles, sizeof(float) * 4);
+
+        // buffers الهدف لإعادة الترتيب (نفس أحجام الأصلية)
+        sortedPositionBuffer = new ComputeBuffer(numParticles, sizeof(float) * 3);
+        sortedPrevPositionBuffer = new ComputeBuffer(numParticles, sizeof(float) * 3);
+        sortedVelocityBuffer = new ComputeBuffer(numParticles, sizeof(float) * 3);
+        sortedStateBuffer = new ComputeBuffer(numParticles, sizeof(uint));
+        sortedColorBuffer = new ComputeBuffer(numParticles, sizeof(float) * 4);
 
         // buffer append لمواقع القطرات الواصلة للوحة + عدّاد للقراءة
         splatPointsBuffer = new ComputeBuffer(numParticles, sizeof(float) * 3,
@@ -261,16 +302,75 @@ public class SPHSimulation1 : MonoBehaviour
         var velocities = new Vector3[numParticles];
         float bottomY = -bucketHeight * 0.5f;
         float fillHeight = bucketHeight * fill;
+        float fillRadius = bucketRadius * 0.9f;
 
+        // توزيع منتظم (شبكة + جيتر خفيف) بدل العشوائي البحت.
+        // العشوائي البحت يسبب تكتلات محلية عشوائية (كثافة زائدة موضعية عبر تذبذب إحصائي طبيعي)
+        // تولّد ضغط Clavet عنيف من أول فريم وتنفجر - خصوصاً مع أعداد كبيرة (150 ألف+).
+        float cylinderVolume = Mathf.PI * fillRadius * fillRadius * Mathf.Max(fillHeight, 0.001f);
+        float spacing = Mathf.Pow(cylinderVolume / Mathf.Max(1, numParticles), 1f / 3f) * 0.85f;
+        // أرضية أعلى للمسافة: تمنع انفجار أبعاد الشبكة لو الحجم صغير جداً نسبة للعدد
+        spacing = Mathf.Max(spacing, 0.001f);
+
+        // سقف صارم على أبعاد الشبكة (يمنع التعليق رياضياً بغض النظر عن أي قيم مدخلة)
+        const int MAX_AXIS = 150;
+        int nx = Mathf.Clamp(Mathf.CeilToInt((fillRadius * 2f) / spacing), 1, MAX_AXIS);
+        int ny = Mathf.Clamp(Mathf.CeilToInt(fillHeight / spacing), 1, MAX_AXIS);
+
+        // إعادة حساب spacing الفعلي بناءً على الأبعاد بعد القفل (لو انقفلت الأبعاد، نكبّر spacing ليطابق)
+        float actualSpacingXZ = (fillRadius * 2f) / nx;
+        float actualSpacingY = fillHeight / ny;
+
+        var candidates = new List<Vector3>(Mathf.Min(numParticles + 64, MAX_AXIS * MAX_AXIS * MAX_AXIS));
+        int maxCandidates = numParticles * 2;
+        for (int ix = 0; ix < nx && candidates.Count < maxCandidates; ix++)
+        {
+            float px = -fillRadius + (ix + 0.5f) * actualSpacingXZ;
+            for (int iz = 0; iz < nx && candidates.Count < maxCandidates; iz++)
+            {
+                float pz = -fillRadius + (iz + 0.5f) * actualSpacingXZ;
+                if (px * px + pz * pz > fillRadius * fillRadius) continue;   // خارج الأسطوانة
+                for (int iy = 0; iy < ny && candidates.Count < maxCandidates; iy++)
+                {
+                    float py = bottomY + (iy + 0.5f) * actualSpacingY;
+                    Vector3 jitter = Random.insideUnitSphere * Mathf.Min(actualSpacingXZ, actualSpacingY) * 0.15f;
+                    candidates.Add(new Vector3(px, py, pz) + jitter);
+                }
+            }
+        }
+
+        // خذ أول numParticles من الشبكة المنتظمة (تغطية متساوية للحجم كامل)
+        // احتياطي: لو الشبكة (بعد القفل) ما غطّت العدد المطلوب، أكمل الباقي عشوائياً
         for (int i = 0; i < numParticles; i++)
         {
-            float r = bucketRadius * 0.9f * Mathf.Sqrt(Random.value);
-            float a = Random.Range(0f, Mathf.PI * 2f);
-            float y = bottomY + Random.Range(0f, fillHeight);
-            Vector3 local = new Vector3(r * Mathf.Cos(a), y, r * Mathf.Sin(a));
+            Vector3 local;
+            if (i < candidates.Count)
+            {
+                local = candidates[i];
+            }
+            else
+            {
+                float r = fillRadius * Mathf.Sqrt(Random.value);
+                float a = Random.Range(0f, Mathf.PI * 2f);
+                float y = bottomY + Random.Range(0f, fillHeight);
+                local = new Vector3(r * Mathf.Cos(a), y, r * Mathf.Sin(a));
+            }
+
+            // قفل أمان نهائي: مهما كانت الحسابات، لا يُسمح لأي جسيم يبدأ خارج السطل فعلياً
+            float radial = Mathf.Sqrt(local.x * local.x + local.z * local.z);
+            float maxRadial = bucketRadius * 0.95f;
+            if (radial > maxRadial)
+            {
+                float scale = maxRadial / Mathf.Max(radial, 0.0001f);
+                local.x *= scale;
+                local.z *= scale;
+            }
+            local.y = Mathf.Clamp(local.y, bottomY + 0.001f, bottomY + bucketHeight - 0.001f);
+
             positions[i] = center + rot * local;
             velocities[i] = Vector3.zero;
         }
+
 
         positionBuffer.SetData(positions);
         prevPositionBuffer.SetData(positions);
@@ -389,8 +489,14 @@ public class SPHSimulation1 : MonoBehaviour
         kGravity = compute.FindKernel("ApplyGravity");
         kClearGrid = compute.FindKernel("ClearGrid");
         kCount = compute.FindKernel("CountParticles");
-        kPrefix = compute.FindKernel("PrefixSumNaive");
+        kScanBlocks = compute.FindKernel("PrefixScanBlocks");
+        kScanBlockSums = compute.FindKernel("PrefixScanBlockSums");
+        kScanCombine = compute.FindKernel("PrefixScanCombine");
         kScatter = compute.FindKernel("ScatterParticles");
+        kReorderPosVel = compute.FindKernel("ReorderData_PosVel");
+        kReorderStateColor = compute.FindKernel("ReorderData_StateColor");
+        kReorderCopyBackPosVel = compute.FindKernel("ReorderCopyBack_PosVel");
+        kReorderCopyBackStateColor = compute.FindKernel("ReorderCopyBack_StateColor");
         kRelax = compute.FindKernel("DoubleDensityRelax");
         kVelocity = compute.FindKernel("ComputeVelocity");
         kCheckHoles = compute.FindKernel("CheckHoles");
@@ -411,12 +517,30 @@ public class SPHSimulation1 : MonoBehaviour
             compute.SetBuffer(k, "SortedIndices", sortedIndicesBuffer);
             compute.SetBuffer(k, "ParticleCellIndex", particleCellIndexBuffer);
         }
-        int[] gridKernels = { kClearGrid, kPrefix };
+        int[] gridKernels = { kClearGrid, kScanBlocks, kScanBlockSums, kScanCombine };
         foreach (int k in gridKernels)
         {
             compute.SetBuffer(k, "CellCounts", cellCountsBuffer);
             compute.SetBuffer(k, "CellStart", cellStartBuffer);
             compute.SetBuffer(k, "CellEnd", cellEndBuffer);
+            compute.SetBuffer(k, "BlockSums", blockSumsBuffer);
+        }
+
+        // ربط buffers إعادة الترتيب (4 كرنلات - كل كرنل يستخدم اللي يحتاجه بس)
+        int[] reorderKernels = { kReorderPosVel, kReorderStateColor, kReorderCopyBackPosVel, kReorderCopyBackStateColor };
+        foreach (int k in reorderKernels)
+        {
+            compute.SetBuffer(k, "Positions", positionBuffer);
+            compute.SetBuffer(k, "PrevPositions", prevPositionBuffer);
+            compute.SetBuffer(k, "Velocities", velocityBuffer);
+            compute.SetBuffer(k, "States", stateBuffer);
+            compute.SetBuffer(k, "SortedIndices", sortedIndicesBuffer);
+            compute.SetBuffer(k, "SortedPositions", sortedPositionsBuffer);
+            compute.SetBuffer(k, "SortedPrevPositions", sortedPrevPositionsBuffer);
+            compute.SetBuffer(k, "SortedVelocities", sortedVelocitiesBuffer);
+            compute.SetBuffer(k, "SortedStates", sortedStatesBuffer);
+            compute.SetBuffer(k, "ParticleColorsSorted", sortedColorsBuffer);
+            compute.SetBuffer(k, "ParticleColorsIn", colorBuffer);
         }
 
         // ربط buffer القطرات الواصلة بـ ComputeVelocity (هو من يكتب فيه)
@@ -453,6 +577,8 @@ public class SPHSimulation1 : MonoBehaviour
 
         int pGroups = Mathf.CeilToInt(numParticles / (float)THREADS);
         int cGroups = Mathf.CeilToInt(numCells / (float)THREADS);
+        // عدد كتل الـ prefix scan (كل كتلة 256 خلية)
+        int scanBlocks = Mathf.CeilToInt(numCells / 256f);
 
         // صفّر عدّاد القطرات الواصلة قبل خطوة المحاكاة
         if (canvas != null)
@@ -464,8 +590,17 @@ public class SPHSimulation1 : MonoBehaviour
         {
             compute.Dispatch(kClearGrid, cGroups, 1, 1);
             compute.Dispatch(kCount, pGroups, 1, 1);
-            compute.Dispatch(kPrefix, 1, 1, 1);
+            // prefix sum متوازي على 3 مراحل (بدل خيط واحد بطيء)
+            compute.Dispatch(kScanBlocks, scanBlocks, 1, 1);
+            compute.Dispatch(kScanBlockSums, 1, 1, 1);
+            compute.Dispatch(kScanCombine, scanBlocks, 1, 1);
             compute.Dispatch(kScatter, pGroups, 1, 1);
+            // إعادة الترتيب: الجيران يصيروا متجاورين بالذاكرة (وصول أسرع للكرت)
+            // مقسّمة لأربع كرنلات بسبب حد DirectX (أقصى 8 UAV لكل كرنل)
+            compute.Dispatch(kReorderPosVel, pGroups, 1, 1);
+            compute.Dispatch(kReorderStateColor, pGroups, 1, 1);
+            compute.Dispatch(kReorderCopyBackPosVel, pGroups, 1, 1);
+            compute.Dispatch(kReorderCopyBackStateColor, pGroups, 1, 1);
             compute.Dispatch(kRelax, pGroups, 1, 1);
         }
 
@@ -613,7 +748,7 @@ public class SPHSimulation1 : MonoBehaviour
         compute.SetVector("externalAccel", externalAccel);
 
         compute.SetInt("gridResolution", gridResolution);
-        compute.SetFloat("gridCellSize", smoothingRadius);
+        compute.SetFloat("gridCellSize", gridCellSize);
         compute.SetVector("gridMin", gridMin);
 
         compute.SetInt("numHoles", Mathf.Max(1, holes.Length));
@@ -659,13 +794,16 @@ public class SPHSimulation1 : MonoBehaviour
     public ComputeBuffer GetStateBuffer() => stateBuffer;
     public bool UseFixedColors() => useFixedColors;
 
-
+    /// <summary>
+    /// يبدّل لون الدهان الحالي. الجسيمات التي لا تزال في السطل تأخذ اللون الجديد.
+    /// استدعِها من زر UI لتغيير لون الرسم.
+    /// </summary>
     public void SetPaintColor(Color newColor)
     {
         paintColor = newColor;
         lastAppliedColor = newColor;
         ApplyColorToInBucketParticles(newColor);
-        Debug.Log($"[SPH] paint color changed to {newColor}");
+        Debug.Log($"[SPH] تبديل لون الدهان إلى {newColor}");
     }
 
     void OnDestroy()
@@ -685,6 +823,12 @@ public class SPHSimulation1 : MonoBehaviour
         cellEndBuffer?.Release();
         sortedIndicesBuffer?.Release();
         particleCellIndexBuffer?.Release();
+        blockSumsBuffer?.Release();
+        sortedPositionsBuffer?.Release();
+        sortedPrevPositionsBuffer?.Release();
+        sortedVelocitiesBuffer?.Release();
+        sortedStatesBuffer?.Release();
+        sortedColorsBuffer?.Release();
     }
 
     // رسم الثقوب في محرر Scene للمساعدة في وضعها

@@ -1,0 +1,363 @@
+// ============================================================
+//  FluidClavet.compute
+//  خوارزمية Clavet (Double Density Relaxation) على بنية
+//  Spatial Hash المحسّنة (نمط Sebastian Lague) للأداء العالي.
+//  يصل لعشرات-مئات الآلاف من الجسيمات.
+//
+//  الفرق عن نظامنا القديم:
+//  - يستخدم SpatialOffsets + SpatialKeys (بحث أسرع)
+//  - الترتيب عبر GPU CountSort متوازي (بدل PrefixSum بخيط واحد)
+//  - إعادة ترتيب الجسيمات بالذاكرة (Reorder) لوصول أسرع للكرت
+// ============================================================
+#pragma kernel ExternalForces
+#pragma kernel UpdateSpatialHash
+#pragma kernel Reorder
+#pragma kernel ReorderCopyBack
+#pragma kernel CalculateDensity
+#pragma kernel DoubleDensityRelax
+#pragma kernel UpdatePositions
+
+// نفس دوال الـ hashing تبع Sebastian (مجرّبة وسريعة)
+#include "./SpatialHash3D.hlsl"
+
+static const int ThreadGroupSize = 256;
+
+// --- Buffers الأساسية ---
+RWStructuredBuffer<float3> Positions;
+RWStructuredBuffer<float3> PredictedPositions;
+RWStructuredBuffer<float3> Velocities;
+RWStructuredBuffer<float2> Densities; // (density, nearDensity)
+
+// --- Spatial hashing (نمط Sebastian) ---
+RWStructuredBuffer<uint> SpatialKeys;
+RWStructuredBuffer<uint> SpatialOffsets;
+StructuredBuffer<uint> SortedIndices;
+
+// --- الإعدادات ---
+const uint numParticles;
+const float gravity;
+const float deltaTime;
+const float collisionDamping;
+const float velocityDamping; // تخميد عام للسرعة (نفس آلية الدلو) - يمتص الطاقة الزائدة
+const float smoothingRadius;
+
+// معاملات Clavet
+const float restDensity;
+const float stiffness;
+const float nearStiffness;
+
+// حدود الصندوق (نمط Sebastian - مصفوفات تحويل)
+const float3 boundsSize;
+const float4x4 localToWorld;
+const float4x4 worldToLocal;
+
+// --- حدود السطل الأسطواني (للدمج مع مشروع البندول) ---
+const uint useBucket; // 1 = سطل أسطواني، 0 = صندوق
+const float3 bucketCenter; // مركز السطل بالعالم
+const float4 bucketRotation; // دوران السطل (كواتيرنيون)
+const float bucketRadius; // نصف قطر السطل
+const float bucketHeight; // ارتفاع السطل
+const float3 externalAccel; // قصور حركة السطل (يُطبّق على السائل)
+const float wallRestitution; // ارتداد الجدار
+
+// دوال الكواتيرنيون (لدوران السطل)
+float4 QuatInverse(float4 q)
+{
+    return float4(-q.x, -q.y, -q.z, q.w) / dot(q, q);
+}
+float3 QuatRotate(float4 q, float3 v)
+{
+    float3 u = q.xyz;
+    float s = q.w;
+    return 2.0 * dot(u, v) * u + (s * s - dot(u, u)) * v + 2.0 * s * cross(u, v);
+}
+
+// ============================================================
+//  دوال Clavet
+// ============================================================
+
+// نواة الكثافة: (1 - r/h)²  -- نفس مبدأ Clavet
+float ClavetDensityKernel(float dst, float radius)
+{
+    if (dst < radius)
+    {
+        float v = 1.0 - dst / radius;
+        return v * v;
+    }
+    return 0;
+}
+
+// نواة الكثافة القريبة: (1 - r/h)³
+float ClavetNearDensityKernel(float dst, float radius)
+{
+    if (dst < radius)
+    {
+        float v = 1.0 - dst / radius;
+        return v * v * v;
+    }
+    return 0;
+}
+
+// حل التصادم مع الصندوق (نمط Sebastian - أنيق ويدعم صندوق مدوّر)
+void ResolveCollisions(inout float3 pos, inout float3 vel, float damping)
+{
+    float3 posLocal = mul(worldToLocal, float4(pos, 1)).xyz;
+    float3 velLocal = mul(worldToLocal, float4(vel, 0)).xyz;
+
+    const float3 halfSize = 0.5;
+    const float3 edgeDst = halfSize - abs(posLocal);
+
+    if (edgeDst.x <= 0)
+    {
+        posLocal.x = halfSize.x * sign(posLocal.x);
+        velLocal.x *= -damping;
+    }
+    if (edgeDst.y <= 0)
+    {
+        posLocal.y = halfSize.y * sign(posLocal.y);
+        velLocal.y *= -damping;
+    }
+    if (edgeDst.z <= 0)
+    {
+        posLocal.z = halfSize.z * sign(posLocal.z);
+        velLocal.z *= -damping;
+    }
+
+    pos = mul(localToWorld, float4(posLocal, 1)).xyz;
+    vel = mul(localToWorld, float4(velLocal, 0)).xyz;
+}
+
+// تصادم السطل الأسطواني (مفتوح من الأعلى - مثل مشروع البندول)
+void ResolveBucketCollision(inout float3 pos, inout float3 vel)
+{
+    // حوّل لفضاء السطل المحلي
+    float4 invRot = QuatInverse(bucketRotation);
+    float3 local = QuatRotate(invRot, pos - bucketCenter);
+    float3 localVel = QuatRotate(invRot, vel);
+
+    float halfH = bucketHeight * 0.5;
+
+    // القاع
+    if (local.y < -halfH)
+    {
+        local.y = -halfH;
+        if (localVel.y < 0)
+            localVel.y *= -wallRestitution;
+    }
+    // الجدار الجانبي (أسطوانة) - مفتوح من الأعلى فلا سقف
+    float2 radial = float2(local.x, local.z);
+    float dist = length(radial);
+    if (dist > bucketRadius)
+    {
+        float2 dir = radial / dist;
+        local.x = dir.x * bucketRadius;
+        local.z = dir.y * bucketRadius;
+        // أزل السرعة المتجهة للخارج
+        float2 velRadial = float2(localVel.x, localVel.z);
+        float outward = dot(velRadial, dir);
+        if (outward > 0)
+        {
+            velRadial -= dir * outward * (1.0 + wallRestitution);
+            localVel.x = velRadial.x;
+            localVel.z = velRadial.y;
+        }
+    }
+
+    // ارجع لفضاء العالم
+    pos = bucketCenter + QuatRotate(bucketRotation, local);
+    vel = QuatRotate(bucketRotation, localVel);
+}
+
+// ============================================================
+//  1. القوى الخارجية (جاذبية) + التنبؤ بالموقع
+// ============================================================
+[numthreads(ThreadGroupSize, 1, 1)]
+void ExternalForces(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    // جاذبية + قصور حركة السطل (لو مفعّل)
+    float3 accel = float3(0, -gravity, 0);
+    if (useBucket == 1)
+        accel += externalAccel;
+    Velocities[id.x] += accel * deltaTime;
+
+    // موقع متنبّأ (نبني الشبكة عليه - أكثر استقراراً)
+    PredictedPositions[id.x] = Positions[id.x] + Velocities[id.x] * deltaTime;
+}
+
+// ============================================================
+//  2. بناء المفاتيح المكانية (Spatial Keys)
+// ============================================================
+[numthreads(ThreadGroupSize, 1, 1)]
+void UpdateSpatialHash(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    int3 cell = GetCell3D(PredictedPositions[id.x], smoothingRadius);
+    uint hash = HashCell3D(cell);
+    uint key = KeyFromHash(hash, numParticles);
+    SpatialKeys[id.x] = key;
+}
+
+// ============================================================
+//  3-4. إعادة ترتيب الجسيمات بالذاكرة (لوصول أسرع للجيران)
+// ============================================================
+RWStructuredBuffer<float3> SortTarget_Positions;
+RWStructuredBuffer<float3> SortTarget_PredictedPositions;
+RWStructuredBuffer<float3> SortTarget_Velocities;
+
+[numthreads(ThreadGroupSize, 1, 1)]
+void Reorder(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    uint sortedIndex = SortedIndices[id.x];
+    SortTarget_Positions[id.x] = Positions[sortedIndex];
+    SortTarget_PredictedPositions[id.x] = PredictedPositions[sortedIndex];
+    SortTarget_Velocities[id.x] = Velocities[sortedIndex];
+}
+
+[numthreads(ThreadGroupSize, 1, 1)]
+void ReorderCopyBack(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    Positions[id.x] = SortTarget_Positions[id.x];
+    PredictedPositions[id.x] = SortTarget_PredictedPositions[id.x];
+    Velocities[id.x] = SortTarget_Velocities[id.x];
+}
+
+// ============================================================
+//  5. حساب الكثافة (density + near density) - Clavet
+// ============================================================
+[numthreads(ThreadGroupSize, 1, 1)]
+void CalculateDensity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    float3 pos = PredictedPositions[id.x];
+    int3 originCell = GetCell3D(pos, smoothingRadius);
+    float sqrRadius = smoothingRadius * smoothingRadius;
+
+    float density = 0;
+    float nearDensity = 0;
+
+    // البحث عن الجيران بآلية Sebastian المحسّنة (27 خلية)
+    for (int i = 0; i < 27; i++)
+    {
+        uint hash = HashCell3D(originCell + offsets3D[i]);
+        uint key = KeyFromHash(hash, numParticles);
+        uint currIndex = SpatialOffsets[key];
+
+        while (currIndex < numParticles)
+        {
+            uint neighbourIndex = currIndex;
+            currIndex++;
+
+            if (SpatialKeys[neighbourIndex] != key)
+                break; // خرجنا من الـ bin
+
+            float3 neighbourPos = PredictedPositions[neighbourIndex];
+            float3 offset = neighbourPos - pos;
+            float sqrDst = dot(offset, offset);
+            if (sqrDst > sqrRadius)
+                continue;
+
+            float dst = sqrt(sqrDst);
+            density += ClavetDensityKernel(dst, smoothingRadius);
+            nearDensity += ClavetNearDensityKernel(dst, smoothingRadius);
+        }
+    }
+
+    Densities[id.x] = float2(density, nearDensity);
+}
+
+// ============================================================
+//  6. الاسترخاء بالكثافة المزدوجة (قلب Clavet)
+//     نزيح المواقع مباشرة بناءً على الضغط (بدل قوة+تسريع)
+// ============================================================
+[numthreads(ThreadGroupSize, 1, 1)]
+void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    float3 pos = PredictedPositions[id.x];
+    int3 originCell = GetCell3D(pos, smoothingRadius);
+    float sqrRadius = smoothingRadius * smoothingRadius;
+
+    float density = Densities[id.x].x;
+    float nearDensity = Densities[id.x].y;
+
+    // ضغط Clavet
+    float pressure = stiffness * (density - restDensity);
+    float nearPressure = nearStiffness * nearDensity;
+
+    float3 posDelta = float3(0, 0, 0);
+
+    for (int i = 0; i < 27; i++)
+    {
+        uint hash = HashCell3D(originCell + offsets3D[i]);
+        uint key = KeyFromHash(hash, numParticles);
+        uint currIndex = SpatialOffsets[key];
+
+        while (currIndex < numParticles)
+        {
+            uint neighbourIndex = currIndex;
+            currIndex++;
+
+            if (SpatialKeys[neighbourIndex] != key)
+                break;
+            if (neighbourIndex == id.x)
+                continue;
+
+            float3 neighbourPos = PredictedPositions[neighbourIndex];
+            float3 offset = neighbourPos - pos;
+            float sqrDst = dot(offset, offset);
+            if (sqrDst > sqrRadius || sqrDst < 0.000001)
+                continue;
+
+            float dst = sqrt(sqrDst);
+            float q = 1.0 - dst / smoothingRadius;
+            float3 dir = offset / dst;
+
+            // الإزاحة: نبعد الجيران بمقدار الضغط (Clavet)
+            float displace = (pressure * q + nearPressure * q * q) * deltaTime * deltaTime;
+            posDelta -= dir * displace * 0.5;
+        }
+    }
+
+    PredictedPositions[id.x] += posDelta;
+}
+
+// ============================================================
+//  7. تحديث المواقع النهائية + السرعة + التصادم
+// ============================================================
+[numthreads(ThreadGroupSize, 1, 1)]
+void UpdatePositions(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+
+    // السرعة تُستنتج من حركة الموقع المتنبّأ (Position-Based)
+    float3 predictedPos = PredictedPositions[id.x];
+    float3 vel = (predictedPos - Positions[id.x]) / deltaTime;
+    float3 pos = predictedPos;
+
+    // تخميد بسيط: يمتص الحركة الزائدة (بما فيها الدوامة المصطنعة) - نفس آلية الدلو بالضبط
+    // ضروري للجسيمات الداخلية التي لا تلامس الجدران أبداً (وإلا تدافع دائم بلا استقرار)
+    vel *= velocityDamping;
+
+    // التصادم: سطل أسطواني أو صندوق
+    if (useBucket == 1)
+        ResolveBucketCollision(pos, vel);
+    else
+        ResolveCollisions(pos, vel, collisionDamping);
+
+    Positions[id.x] = pos;
+    Velocities[id.x] = vel;
+}
