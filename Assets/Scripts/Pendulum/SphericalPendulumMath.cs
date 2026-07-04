@@ -61,6 +61,37 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
     // للتوافق مع SimulationManager القديم
     public bool isSimulating => !isDragging && velocity.magnitude > 0.01f;
 
+    // *** للوحة التحكم (Control Panel UI) ***
+    public float GetThetaDegrees() => theta * Mathf.Rad2Deg;
+    public float GetPhiDegrees()   => phi * Mathf.Rad2Deg;
+
+    /// <summary>
+    /// يضبط موقع السطل يدوياً بزاويتَي الاهتزاز الكرويتَين (theta من الأسفل، phi حول المحور Y)
+    /// ويصفّر السرعة — يشبه سحب السطل بالماوس ثم تركه. استدعِها من واجهة التحكم.
+    /// </summary>
+    public void SetSphericalAngles(float thetaDegrees, float phiDegrees)
+    {
+        if (pivot == null) return;
+
+        float t = thetaDegrees * Mathf.Deg2Rad;
+        float p = phiDegrees * Mathf.Deg2Rad;
+
+        // نفس تحويل الإحداثيات الكروية المستخدم في SyncAnglesFromPosition لكن بالعكس
+        // theta = acos(-y_normalized)  =>  y_normalized = -cos(theta)
+        float y = -Mathf.Cos(t);
+        float horizontal = Mathf.Sin(t);
+        float x = horizontal * Mathf.Cos(p);
+        float z = horizontal * Mathf.Sin(p);
+
+        Vector3 direction = new Vector3(x, y, z).normalized;
+        transform.position = pivot.position + direction * effectiveLength;
+        velocity = Vector3.zero;
+        isDragging = false;
+
+        SyncAnglesFromPosition();
+        UpdateRopeRenderer();
+    }
+
     void Start()
     {
         ropeRenderer = GetComponent<LineRenderer>();

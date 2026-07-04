@@ -49,7 +49,8 @@ public class SPHRenderer : MonoBehaviour
         Debug.Log("✅ SPHRenderer جاهز");
     }
 
-    void RefreshArgs()
+    /// <summary>يحدّث عدد الجسيمات المرسومة. استدعِها بعد SPHSimulation1.RebuildSimulation() لو غيّرت numParticles.</summary>
+    public void RefreshArgs()
     {
         args[0] = mesh.GetIndexCount(0);
         args[1] = (uint)simulation.GetParticleCount();

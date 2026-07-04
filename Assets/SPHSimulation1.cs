@@ -172,6 +172,22 @@ public class SPHSimulation1 : MonoBehaviour
         if (bucketTransform == null && pendulum != null)
             bucketTransform = pendulum.transform;
 
+        RebuildSimulation();
+    }
+
+    /// <summary>
+    /// يعيد بناء المحاكاة بالكامل (الشبكة + الـ buffers + توزيع الجسيمات).
+    /// استدعِها من واجهة التحكم بعد تغيير numParticles / bucketRadius / bucketHeight /
+    /// smoothingRadius / initialFillRatio / twoDropletsMode أو أي قيمة تؤثر على التهيئة.
+    /// آمنة للاستدعاء المتكرر (تحرّر الـ buffers القديمة أولاً لو موجودة).
+    /// </summary>
+    public void RebuildSimulation()
+    {
+        if (compute == null) { Debug.LogError("compute فارغ!"); return; }
+
+        ready = false;
+        ReleaseBuffers();
+
         SetupGrid();
         CreateBuffers();
         InitializeParticles();
@@ -808,6 +824,12 @@ public class SPHSimulation1 : MonoBehaviour
 
     void OnDestroy()
     {
+        ReleaseBuffers();
+    }
+
+    /// <summary>يحرّر كل compute buffers والـ RenderTexture الحاليين. آمنة للاستدعاء حتى لو لم تُنشأ بعد.</summary>
+    void ReleaseBuffers()
+    {
         positionBuffer?.Release();
         prevPositionBuffer?.Release();
         velocityBuffer?.Release();
@@ -829,6 +851,13 @@ public class SPHSimulation1 : MonoBehaviour
         sortedVelocitiesBuffer?.Release();
         sortedStatesBuffer?.Release();
         sortedColorsBuffer?.Release();
+
+        positionBuffer = null; prevPositionBuffer = null; velocityBuffer = null; stateBuffer = null;
+        holeBuffer = null; colorBuffer = null; splatPointsBuffer = null; splatCountBuffer = null;
+        canvasRT = null; canvasAccumBuffer = null; cellCountsBuffer = null; cellStartBuffer = null;
+        cellEndBuffer = null; sortedIndicesBuffer = null; particleCellIndexBuffer = null; blockSumsBuffer = null;
+        sortedPositionsBuffer = null; sortedPrevPositionsBuffer = null; sortedVelocitiesBuffer = null;
+        sortedStatesBuffer = null; sortedColorsBuffer = null;
     }
 
     // رسم الثقوب في محرر Scene للمساعدة في وضعها
