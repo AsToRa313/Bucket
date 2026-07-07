@@ -40,6 +40,7 @@ const float3 canvasCenter;
 const float2 canvasHalfSize;
 const uint canvasEnabled;
 AppendStructuredBuffer<float3> SplatPoints;
+RWStructuredBuffer<uint> PaintCounter; // عدّاد ذرّي: يحدّ القطرات المرسومة/إطار
 RWTexture2D<float4> CanvasTex;
 RWStructuredBuffer<float> CanvasAccum;
 RWStructuredBuffer<float4> ParticleColors;
@@ -48,6 +49,10 @@ const float4 paintColorGPU;
 const float splatRadiusPixels, paintOpacityGPU;
 const uint canvasFlipU, canvasFlipV, canvasPooling;
 const float poolGrowth;
+const int poolMaxRadius; // سقف نصف قطر البركة بالبكسل (يمنع التعليق)
+const float poolSaturation; // حد تشبّع البقعة (بعده تتوقف عن الرسم)
+const uint maxSplatsPerFrame; // أقصى عدد قطرات تُرسم بكل إطار (يمنع تضارب الكتابة = التعليق)
+const float freeParticleKillDepth; // عمق تحت الكانفاس تُستهلك عنده القطرة الحرة (يمنع السقوط اللانهائي)
 const uint canvasWetMix;
 const float wetMixStrength;
 
@@ -172,7 +177,7 @@ void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numParticles)
         return;
-    if (States[id.x] == 1)
+    if (States[id.x] != 0)
         return;
 
     float3 pos = Positions[id.x];
@@ -202,10 +207,10 @@ void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
                         break;
 
                     uint j = i;
-                    if (j == id.x || States[j] == 1)
+                    if (j == id.x || States[j] != 0)
                         continue;
 
-        // <--- حماية كرت الشاشة: لا تفحص أكثر من 64 جار في الخلية الواحدة
+        
                     if (neighborCount++ > 64)
                         break;
 
@@ -242,7 +247,7 @@ void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
                         break;
 
                     uint j = i;
-                    if (j == id.x || States[j] == 1)
+                    if (j == id.x || States[j] != 0)
                         continue;
 
                     if (neighborCount++ > 64)
@@ -281,7 +286,8 @@ void ComputeVelocity(uint3 id : SV_DispatchThreadID)
     if (States[id.x] == 2 || States[id.x] == 4)
     {
         Velocities[id.x] = float3(0, 0, 0);
-        Positions[id.x] = float3(9999, 9999, 9999);
+
+        Positions[id.x] = float3(99999.0 + (float) id.x * 0.1, 99999.0, 0);
         return;
     }
     if (States[id.x] == 3)
@@ -309,8 +315,16 @@ void ComputeVelocity(uint3 id : SV_DispatchThreadID)
                 Positions[id.x] = splatPos;
                 Velocities[id.x] = float3(0, 0, 0);
                 States[id.x] = 3;
-                SplatPoints.Append(splatPos);
+              
             }
+        }
+        // أرضية للقطرات الحرة: لو سقطت أبعد من الكانفاس (أو ما في كانفاس)،
+        // نستهلكها بدل السقوط اللانهائي. حرج: السقوط بلا حد يمدّد الشبكة المكانية = تعليق تدريجي.
+        float killLevel = (canvasEnabled == 1) ? (canvasY - freeParticleKillDepth)
+                                               : (bucketCenter.y - bucketHeight * 0.5 - freeParticleKillDepth);
+        if (States[id.x] == 1 && newPos.y < killLevel)
+        {
+            States[id.x] = 4; // استُهلكت (تختفي)
         }
         return;
     }
@@ -360,7 +374,7 @@ void CheckHoles(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numParticles)
         return;
-    if (States[id.x] == 1)
+    if (States[id.x] != 0)
         return;
 
     float4 invRot = QuatInverse(bucketRotation);
@@ -392,7 +406,7 @@ void ApplyVortex(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numParticles)
         return;
-    if (States[id.x] == 1)
+    if (States[id.x] != 0)
         return;
 
     float4 invRot = QuatInverse(bucketRotation);
@@ -437,6 +451,9 @@ void PaintOnCanvas(uint3 id : SV_DispatchThreadID)
     if (States[id.x] != 3)
         return;
 
+    // ❌ تم حذف عدّاد الانتظار (PaintCounter). 
+    // الآن آلاف القطرات سترسم دفعة واحدة بسلاسة لأن حجم البركة محدود!
+
     float3 pos = Positions[id.x];
     float4 dropColor = ParticleColors[id.x];
 
@@ -463,10 +480,11 @@ void PaintOnCanvas(uint3 id : SV_DispatchThreadID)
     if (canvasPooling == 1)
     {
         int centerIdx = clamp(cy, 0, (int) canvasResolution - 1) * (int) canvasResolution + clamp(cx, 0, (int) canvasResolution - 1);
-        CanvasAccum[centerIdx] += 1.0;
-        float growth = log2(1.0 + CanvasAccum[centerIdx]) * poolGrowth;
-        // أضفت حماية هنا لمنع توسع البركة بشكل يعلق الكرت (حد أقصى 48 بكسل كحلقة)
-        outerRadius = min((int) (coreRadius * (1.0 + growth)), 48);
+        float accum = min(CanvasAccum[centerIdx] + 1.0, poolSaturation);
+        CanvasAccum[centerIdx] = accum;
+
+        float growth = log2(1.0 + accum) * poolGrowth;
+        outerRadius = min((int) (coreRadius * (1.0 + growth)), poolMaxRadius);
     }
 
     for (int dy = -outerRadius; dy <= outerRadius; dy++)
@@ -508,5 +526,5 @@ void PaintOnCanvas(uint3 id : SV_DispatchThreadID)
             CanvasTex[coord] = result;
         }
     }
-    States[id.x] = 4;
+    States[id.x] = 4; // تم الرسم بنجاح، اذهب للمقبرة في الفريم القادم!
 }

@@ -195,7 +195,7 @@ public class SimulationControlPanel : MonoBehaviour
         secFluidSolver = Foldout("Particles & Solver", secFluidSolver);
         if (secFluidSolver)
         {
-            int newCount = IntSlider("Particle Count (Rebuild)", fluidSim.numParticles, 100, 20000);
+            int newCount = IntSlider("Particle Count (Rebuild)", fluidSim.numParticles, 100, 100000);
             if (newCount != fluidSim.numParticles) { fluidSim.numParticles = newCount; rebuildNeeded = true; }
 
             float newSmoothing = Slider("Smoothing Radius (Rebuild)", fluidSim.smoothingRadius, 0.02f, 0.3f, "F3");

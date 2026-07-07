@@ -32,6 +32,8 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
     [Header("Rope Visual Settings")]
     public int ropeSegments = 15;
     public float sagFactor = 0.6f;
+    [Tooltip("المسافة من مركز السطل إلى النقطة التي يلمس فيها الحبل. اجعلها 0.3 لتطابق المجسم")]
+    public float ropeAttachmentOffset = 0.3f;
 
     // ---- حالة داخلية ----
     private float twistAngle = 0f;
@@ -49,26 +51,14 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
     private Vector3 lastDragPosition;
     private LineRenderer ropeRenderer;
 
-    // *** الدالة اللي بتحتاجها SPHSimulation ***
-
     public Vector3 GetBucketPosition() => transform.position;
-    public float   GetBucketSpeed()    => velocity.magnitude;
-
-    // *** جديد — بتحتاجها PaintSpawner ***
+    public float GetBucketSpeed() => velocity.magnitude;
     public Vector3 GetVelocityVector() => velocity;
-    public float   GetFillRatio()      => currentPaintMass / maxPaintMass;
-
-    // للتوافق مع SimulationManager القديم
+    public float GetFillRatio() => currentPaintMass / maxPaintMass;
     public bool isSimulating => !isDragging && velocity.magnitude > 0.01f;
-
-    // *** للوحة التحكم (Control Panel UI) ***
     public float GetThetaDegrees() => theta * Mathf.Rad2Deg;
-    public float GetPhiDegrees()   => phi * Mathf.Rad2Deg;
+    public float GetPhiDegrees() => phi * Mathf.Rad2Deg;
 
-    /// <summary>
-    /// يضبط موقع السطل يدوياً بزاويتَي الاهتزاز الكرويتَين (theta من الأسفل، phi حول المحور Y)
-    /// ويصفّر السرعة — يشبه سحب السطل بالماوس ثم تركه. استدعِها من واجهة التحكم.
-    /// </summary>
     public void SetSphericalAngles(float thetaDegrees, float phiDegrees)
     {
         if (pivot == null) return;
@@ -76,15 +66,14 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
         float t = thetaDegrees * Mathf.Deg2Rad;
         float p = phiDegrees * Mathf.Deg2Rad;
 
-        // نفس تحويل الإحداثيات الكروية المستخدم في SyncAnglesFromPosition لكن بالعكس
-        // theta = acos(-y_normalized)  =>  y_normalized = -cos(theta)
         float y = -Mathf.Cos(t);
         float horizontal = Mathf.Sin(t);
         float x = horizontal * Mathf.Cos(p);
         float z = horizontal * Mathf.Sin(p);
 
         Vector3 direction = new Vector3(x, y, z).normalized;
-        transform.position = pivot.position + direction * effectiveLength;
+        // تثبيت الموقع دايماً على طول الحبل الأساسي (لازق بالحبل)
+        transform.position = pivot.position + direction * baseLength;
         velocity = Vector3.zero;
         isDragging = false;
 
@@ -107,7 +96,6 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
             SyncAnglesFromPosition();
         }
 
-        // ابدأ بدفعة خفيفة عشان يتحرك من البداية
         velocity = new Vector3(0.5f, 0f, 0f);
     }
 
@@ -115,10 +103,12 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
     {
         ropeRenderer.material = new Material(Shader.Find("Sprites/Default"));
         ropeRenderer.startColor = Color.white;
-        ropeRenderer.endColor   = Color.white;
+        ropeRenderer.endColor = Color.white;
         ropeRenderer.startWidth = 0.04f;
-        ropeRenderer.endWidth   = 0.02f;
+        ropeRenderer.endWidth = 0.02f;
         ropeRenderer.positionCount = ropeSegments;
+        // إصلاح الطيران بالهواء: إجبار الرندر على استخدام إحداثيات العالم
+        ropeRenderer.useWorldSpace = true;
     }
 
     void FixedUpdate()
@@ -127,30 +117,33 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
 
         UpdateMassAndCOM();
 
-        float totalMass      = emptyBucketMass + currentPaintMass;
+        float totalMass = emptyBucketMass + currentPaintMass;
         float massDerivative = (currentPaintMass > 0) ? drainRate : 0f;
 
         float dragCoefficient = 1.0f;
-        if      (shape == BucketShape.Cylindrical) dragCoefficient = 0.82f;
-        else if (shape == BucketShape.Cubic)       dragCoefficient = 1.05f;
-        else if (shape == BucketShape.Conical)     dragCoefficient = 0.50f;
+        if (shape == BucketShape.Cylindrical) dragCoefficient = 0.82f;
+        else if (shape == BucketShape.Cubic) dragCoefficient = 1.05f;
+        else if (shape == BucketShape.Conical) dragCoefficient = 0.50f;
 
         float totalDamping = ((airDamping * dragCoefficient) + massDerivative)
                              / totalMass + pivotFriction;
 
-        // جاذبية + تخامد
-        velocity += Vector3.down * gravity * Time.fixedDeltaTime;
+        // --- محاكاة الجاذبية للحفاظ على فيزياء البندول (البطء) دون فصل السطل ---
+        float simulatedGravity = gravity * (baseLength / effectiveLength);
+
+        velocity += Vector3.down * simulatedGravity * Time.fixedDeltaTime;
         velocity -= velocity * totalDamping * Time.fixedDeltaTime;
 
-        Vector3 nextPosition  = transform.position + velocity * Time.fixedDeltaTime;
-        Vector3 offset        = nextPosition - pivot.position;
-        float   currentDistance = offset.magnitude;
+        Vector3 nextPosition = transform.position + velocity * Time.fixedDeltaTime;
+        Vector3 offset = nextPosition - pivot.position;
+        float currentDistance = offset.magnitude;
 
-        if (currentDistance >= effectiveLength)
+        // --- إجبار السطل على البقاء ملتصقاً بالحبل (baseLength) ---
+        if (currentDistance >= baseLength)
         {
-            Vector3 ropeDirection  = offset.normalized;
-            transform.position     = pivot.position + ropeDirection * effectiveLength;
-            float radialVelocity   = Vector3.Dot(velocity, ropeDirection);
+            Vector3 ropeDirection = offset.normalized;
+            transform.position = pivot.position + ropeDirection * baseLength;
+            float radialVelocity = Vector3.Dot(velocity, ropeDirection);
             if (radialVelocity > 0f)
                 velocity -= ropeDirection * radialVelocity;
         }
@@ -161,26 +154,24 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
 
         SyncAnglesFromPosition();
 
-        // فيزياء الفتل
-        float I_y              = 0.5f * totalMass * (bucketRadius * bucketRadius);
-        float torsionalTorque  = (-torsionalStiffness * twistAngle)
+        float I_y = 0.5f * totalMass * (bucketRadius * bucketRadius);
+        float torsionalTorque = (-torsionalStiffness * twistAngle)
                                  - (torsionalDamping * twistVelocity);
         float twistAcceleration = torsionalTorque / I_y;
-        twistVelocity  += twistAcceleration * Time.fixedDeltaTime;
-        twistAngle     += twistVelocity     * Time.fixedDeltaTime;
+        twistVelocity += twistAcceleration * Time.fixedDeltaTime;
+        twistAngle += twistVelocity * Time.fixedDeltaTime;
 
-        // شرط النوم
         if (Mathf.Abs(theta) < 0.02f
             && velocity.magnitude < 0.05f
             && Mathf.Abs(twistVelocity) < 0.05f)
         {
-            transform.position = pivot.position + Vector3.down * effectiveLength;
-            velocity           = Vector3.zero;
-            theta              = 0f;
-            thetaVelocity      = 0f;
-            phiVelocity        = 0f;
-            twistAngle         = 0f;
-            twistVelocity      = 0f;
+            transform.position = pivot.position + Vector3.down * baseLength;
+            velocity = Vector3.zero;
+            theta = 0f;
+            thetaVelocity = 0f;
+            phiVelocity = 0f;
+            twistAngle = 0f;
+            twistVelocity = 0f;
         }
 
         UpdateRopeRenderer();
@@ -191,25 +182,25 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
     {
         Vector3 localPos = transform.position - pivot.position;
         lastTheta = theta;
-        lastPhi   = phi;
+        lastPhi = phi;
 
         theta = Mathf.Acos(Mathf.Clamp(-localPos.normalized.y, -1f, 1f));
-        phi   = Mathf.Atan2(localPos.z, localPos.x);
+        phi = Mathf.Atan2(localPos.z, localPos.x);
 
         if (Time.fixedDeltaTime > 0)
         {
             thetaVelocity = (theta - lastTheta) / Time.fixedDeltaTime;
-            phiVelocity   = Mathf.DeltaAngle(lastPhi * Mathf.Rad2Deg,
-                                              phi    * Mathf.Rad2Deg)
+            phiVelocity = Mathf.DeltaAngle(lastPhi * Mathf.Rad2Deg,
+                                              phi * Mathf.Rad2Deg)
                             * Mathf.Deg2Rad / Time.fixedDeltaTime;
         }
     }
 
     void OnMouseDown()
     {
-        isDragging       = true;
-        velocity         = Vector3.zero;
-        dragDepth        = Camera.main.WorldToScreenPoint(transform.position).z;
+        isDragging = true;
+        velocity = Vector3.zero;
+        dragDepth = Camera.main.WorldToScreenPoint(transform.position).z;
         lastDragPosition = transform.position;
     }
 
@@ -222,14 +213,15 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
             Input.mousePosition.x, Input.mousePosition.y, dragDepth);
         Vector3 mouseWorldPoint = Camera.main.ScreenToWorldPoint(mouseScreenPoint);
 
-        Vector3 offset      = (mouseWorldPoint - pivot.position).normalized * effectiveLength;
+        // إبقاء السطل لازقاً بالحبل أثناء سحبه بالماوس
+        Vector3 offset = (mouseWorldPoint - pivot.position).normalized * baseLength;
         Vector3 newPosition = pivot.position + offset;
 
         if (Time.deltaTime > 0)
             velocity = (newPosition - lastDragPosition) / Time.deltaTime;
 
         transform.position = newPosition;
-        lastDragPosition   = newPosition;
+        lastDragPosition = newPosition;
 
         SyncAnglesFromPosition();
         UpdateRopeRenderer();
@@ -265,15 +257,17 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
     {
         if (pivot == null || ropeRenderer == null) return;
 
-        Vector3 p0             = pivot.position;
-        Vector3 comPosition    = transform.position;
-        float   offsetToHandle = effectiveLength - baseLength;
+        Vector3 p0 = pivot.position;
+        Vector3 comPosition = transform.position;
 
-        Vector3 directionToPivot  = (p0 - comPosition).normalized;
+        // --- استخدام متغير الإزاحة الجديد للرسم الشكلي فقط ---
+        float offsetToHandle = ropeAttachmentOffset;
+
+        Vector3 directionToPivot = (p0 - comPosition).normalized;
         Vector3 straightHandlePos = comPosition + directionToPivot * offsetToHandle;
 
-        Vector3 p1            = (p0 + straightHandlePos) * 0.5f;
-        float   currentDist   = (straightHandlePos - p0).magnitude;
+        Vector3 p1 = (p0 + straightHandlePos) * 0.5f;
+        float currentDist = (straightHandlePos - p0).magnitude;
 
         if (currentDist < baseLength && !isDragging)
         {
@@ -284,20 +278,17 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
         Vector3 ropeDirectionAtBucket = (p1 - comPosition).normalized;
         if (ropeDirectionAtBucket.magnitude > 0.01f)
         {
-            Quaternion baseRotation  = Quaternion.FromToRotation(Vector3.up,
-                                                                  ropeDirectionAtBucket);
-            Quaternion twistRotation = Quaternion.AngleAxis(
-                                           twistAngle * Mathf.Rad2Deg, Vector3.up);
+            Quaternion baseRotation = Quaternion.FromToRotation(Vector3.up, ropeDirectionAtBucket);
+            Quaternion twistRotation = Quaternion.AngleAxis(twistAngle * Mathf.Rad2Deg, Vector3.up);
             transform.rotation = baseRotation * twistRotation;
         }
 
-        Vector3 actualHandlePos = transform.position
-                                  + transform.up * offsetToHandle;
+        Vector3 actualHandlePos = transform.position + transform.up * offsetToHandle;
 
         ropeRenderer.positionCount = ropeSegments;
         for (int i = 0; i < ropeSegments; i++)
         {
-            float   t     = i / (float)(ropeSegments - 1);
+            float t = i / (float)(ropeSegments - 1);
             Vector3 point = Mathf.Pow(1f - t, 2) * p0
                           + 2f * (1f - t) * t * p1
                           + Mathf.Pow(t, 2) * actualHandlePos;
@@ -306,23 +297,21 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
 
         if (ropeRenderer.material != null)
         {
-            ropeRenderer.material.mainTextureOffset =
-                new Vector2(twistAngle * -0.5f, 0);
+            ropeRenderer.material.mainTextureOffset = new Vector2(twistAngle * -0.5f, 0);
         }
     }
 
     void UpdateSharedData()
     {
         if (data == null) return;
-        data.totalMass            = emptyBucketMass + currentPaintMass;
-        data.currentPaintMass     = currentPaintMass;
-        data.effectiveLength      = effectiveLength;
-        data.fillRatio            = maxPaintMass > 0
-                                    ? currentPaintMass / maxPaintMass : 0;
-        data.theta                = theta;
-        data.phi                  = phi;
+        data.totalMass = emptyBucketMass + currentPaintMass;
+        data.currentPaintMass = currentPaintMass;
+        data.effectiveLength = effectiveLength;
+        data.fillRatio = maxPaintMass > 0 ? currentPaintMass / maxPaintMass : 0;
+        data.theta = theta;
+        data.phi = phi;
         data.angularVelocityTheta = thetaVelocity;
-        data.angularVelocityPhi   = phiVelocity;
+        data.angularVelocityPhi = phiVelocity;
     }
 
     void OnDrawGizmos()
@@ -333,5 +322,4 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
         Gizmos.color = new Color(0, 1, 1, 0.3f);
         Gizmos.DrawWireSphere(transform.position, 0.3f);
     }
-    
 }

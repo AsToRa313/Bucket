@@ -86,15 +86,31 @@ public class SPHSimulation1 : MonoBehaviour
     public bool canvasFlipU = false;
     public bool canvasFlipV = false;
     public bool enablePoolGrowth = true;
-    public float poolGrowth = 1.5f;
+    [Tooltip("سرعة نمو البقعة مع التراكم. أصغر = أخف على الأداء (0.3 موصى به، 1.5 يعلّق)")]
+    [Range(0.1f, 1.5f)]
+    public float poolGrowth = 0.3f;
+    [Tooltip("سقف حجم بركة الطلاء بالبكسل. أصغر = أسرع بكثير (8 موصى به، 20+ يعلّق)")]
+    [Range(4, 24)]
+    public int poolMaxRadius = 8;
+    [Tooltip("حد نمو البقعة: بعد هذا التراكم تتوقف البقعة عن الكبر (لكن تبقى تُرسم فوقها الألوان). أصغر = بقع أصغر وأسرع")]
+    [Range(10, 100)]
+    public float poolSaturation = 40f;
+    [Tooltip("أقصى عدد قطرات تُرسم بكل إطار. يمنع التعليق عند تدفق كثيف. أصغر = أأمن (150 موصى به)")]
+    [Range(20, 2000)]
+    public int maxSplatsPerFrame = 150;
+    [Tooltip("عمق تحت اللوحة تختفي عنده القطرة الحرة (تمنع السقوط اللانهائي الذي يعلّق النظام). متر")]
+    public float freeParticleKillDepth = 2f;
     public bool enableWetMix = true;
     [Range(0f, 1f)]
     public float wetMixStrength = 0.5f;
     public int canvasCheckInterval = 2;
 
+    uint[] zeroArr = new uint[] { 0 };
+
     ComputeBuffer positionBuffer, prevPositionBuffer, velocityBuffer;
     ComputeBuffer stateBuffer, holeBuffer, colorBuffer;
     ComputeBuffer splatPointsBuffer, splatCountBuffer;
+    ComputeBuffer paintCounterBuffer;   // عدّاد حد الرسم/إطار
 
     SpatialHash spatialHash;
 
@@ -173,6 +189,7 @@ public class SPHSimulation1 : MonoBehaviour
 
         splatPointsBuffer = new ComputeBuffer(numParticles, sizeof(float) * 3, ComputeBufferType.Append);
         splatCountBuffer = new ComputeBuffer(1, sizeof(int), ComputeBufferType.IndirectArguments);
+        paintCounterBuffer = new ComputeBuffer(1, sizeof(uint));
     }
 
     void UploadHoles()
@@ -202,20 +219,14 @@ public class SPHSimulation1 : MonoBehaviour
         float bottomY = -bucketHeight * 0.5f;
         float fillRadius = bucketRadius * 0.9f;
 
-        // --- التعديل السحري: ربط العدد بالارتفاع تلقائياً ---
-        // 1. تحديد حجم ثابت للجسيم بناءً على Smoothing Radius
-        float spacing = smoothingRadius * 0.65f;
-        spacing = Mathf.Max(spacing, 0.005f); // حماية من القيم الصفرية
-
-        // 2. حساب الحجم الكلي للسائل = عدد الجزيئات × حجم الجسيم الواحد
-        float particleVolume = spacing * spacing * spacing;
-        float totalFluidVolume = numParticles * particleVolume;
-
-        // 3. حساب الارتفاع المطلوب داخل الأسطوانة ليتسع لهذا الحجم
-        float calculatedHeight = totalFluidVolume / (Mathf.PI * fillRadius * fillRadius);
-
-        // 4. منع السائل من تجاوز سقف السطل (حتى لا ينسكب فوراً)
-        float fillHeight = Mathf.Min(calculatedHeight, bucketHeight * 0.95f);
+        // --- توزيع الجسيمات على كامل حجم السطل بالتساوي ---
+        // نملأ نسبة fill من ارتفاع السطل، ونحسب المسافة بين الجسيمات
+        // من العدد الفعلي (مش من smoothingRadius) - وإلا الجسيمات الزائدة تتكدّس.
+        float fillHeight = bucketHeight * 0.95f * initialFillRatio;
+        float fillVolume = Mathf.PI * fillRadius * fillRadius * fillHeight;
+        // المسافة بين الجسيمات = الجذر التكعيبي لـ (الحجم / العدد)
+        float spacing = Mathf.Pow(fillVolume / Mathf.Max(1, numParticles), 1f / 3f);
+        spacing = Mathf.Max(spacing, 0.0005f); // حماية من القيم الصفرية
         // ---------------------------------------------------
 
         const int MAX_AXIS = 150;
@@ -422,6 +433,7 @@ public class SPHSimulation1 : MonoBehaviour
             compute.SetTexture(kPaintCanvas, "CanvasTex", canvasRT);
             compute.SetBuffer(kPaintCanvas, "CanvasAccum", canvasAccumBuffer);
             compute.SetBuffer(kPaintCanvas, "ParticleColors", colorBuffer);
+            compute.SetBuffer(kPaintCanvas, "PaintCounter", paintCounterBuffer);
         }
     }
 
@@ -466,6 +478,9 @@ public class SPHSimulation1 : MonoBehaviour
         if (canvas != null && canvasRT != null)
         {
             UpdateCanvasConstants();
+            // صفّر عدّاد الرسم باستخدام المصفوفة المجهزة مسبقاً (يمنع التقطيع)
+            paintCounterBuffer.SetData(zeroArr);
+            compute.SetInt("maxSplatsPerFrame", maxSplatsPerFrame);
             compute.Dispatch(kPaintCanvas, pGroups, 1, 1);
         }
     }
@@ -518,6 +533,8 @@ public class SPHSimulation1 : MonoBehaviour
             compute.SetInt("canvasFlipV", canvasFlipV ? 1 : 0);
             compute.SetInt("canvasPooling", enablePoolGrowth ? 1 : 0);
             compute.SetFloat("poolGrowth", poolGrowth);
+            compute.SetInt("poolMaxRadius", poolMaxRadius);
+            compute.SetFloat("poolSaturation", poolSaturation);
             compute.SetInt("canvasWetMix", enableWetMix ? 1 : 0);
             compute.SetFloat("wetMixStrength", wetMixStrength);
         }
@@ -542,6 +559,7 @@ public class SPHSimulation1 : MonoBehaviour
         compute.SetFloat("bucketHeight", bucketHeight);
         compute.SetFloat("collisionDamping", collisionDamping);
         compute.SetFloat("wallRestitution", wallRestitution);
+        compute.SetFloat("freeParticleKillDepth", freeParticleKillDepth);
         compute.SetVector("externalAccel", externalAccel);
 
         compute.SetInt("numHoles", Mathf.Max(1, holes.Length));
@@ -578,6 +596,7 @@ public class SPHSimulation1 : MonoBehaviour
         colorBuffer?.Release();
         splatPointsBuffer?.Release();
         splatCountBuffer?.Release();
+        paintCounterBuffer?.Release();
         if (canvasRT != null) canvasRT.Release();
         canvasAccumBuffer?.Release();
         spatialHash?.Release();

@@ -248,13 +248,13 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::FluidClavetSim
   compute: {fileID: 7200000, guid: 795adb6fe15c8e843911b7f95dbd9ee6, type: 3}
-  particlesPerAxis: 60
+  particlesPerAxis: 55
   iterations: 4
   smoothingRadius: 0.09
   restDensity: 10
   autoRestDensity: 1
-  stiffness: 0.5
-  nearStiffness: 0.5
+  stiffness: 1
+  nearStiffness: 1
   gravity: 9.81
   collisionDamping: 0.4
   velocityDamping: 0.98
