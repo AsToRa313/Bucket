@@ -25,6 +25,8 @@ public class FluidClavetSim : MonoBehaviour
     [Header("معاملات Clavet")]
     public float smoothingRadius = 0.2f;
     public float restDensity = 10f;
+    [Tooltip("حساب كثافة السكون تلقائياً من التوزيع الابتدائي (يُنصح به - يمنع التبعثر عند تغيير smoothingRadius)")]
+    public bool autoRestDensity = true;
     public float stiffness = 0.5f;
     public float nearStiffness = 0.5f;
     public float gravity = 9.81f;
@@ -41,19 +43,15 @@ public class FluidClavetSim : MonoBehaviour
     public Vector3 spawnCentre = new Vector3(0f, 1f, 0f);
     public float jitter = 0.02f;
 
-    [Header("وضع السطل (Bucket Mode)")]
-    [Tooltip("تفعيل حدود السطل الأسطواني بدل الصندوق")]
-    public bool useBucket = false;
-    [Tooltip("كائن السطل (للحركة والقصور). اتركه فارغاً لسطل ثابت في المركز")]
-    public Transform bucketTransform;
-    [Tooltip("البندول (اختياري - للقصور من حركته)")]
-    public MonoBehaviour pendulum;
-    public float bucketRadius = 2f;
-    public float bucketHeight = 4f;
-    [Tooltip("سقف قصور حركة السطل (يمنع الانفجار)")]
-    public float maxInertiaAccel = 30f;
-    [Range(0f, 0.8f)]
-    public float wallRestitution = 0.1f;
+    [Header("تحكم الماوس (Mouse Interaction)")]
+    [Tooltip("زر الماوس الأيسر = دفع، الأيمن = جذب")]
+    public bool enableMouse = true;
+    [Tooltip("نصف قطر تأثير الماوس على السائل")]
+    public float mouseRadius = 1.5f;
+    [Tooltip("قوة الدفع/الجذب")]
+    public float mouseStrength = 60f;
+    [Tooltip("الكاميرا المستخدمة لإسقاط الماوس (فارغ = Main Camera)")]
+    public Camera interactionCamera;
 
     [Header("العرض")]
     public Mesh particleMesh;
@@ -89,9 +87,10 @@ public class FluidClavetSim : MonoBehaviour
 
     bool ready = false;
 
-    // تتبّع حركة السطل (لحساب القصور)
-    Vector3 prevBucketPos = Vector3.zero;
-    Vector3 prevBucketVel = Vector3.zero;
+    // حالة تفاعل الماوس (تُحدّث في Update، تُقرأ في FixedUpdate)
+    bool mouseActiveNow = false;
+    Vector3 mouseWorldPos = Vector3.zero;
+    float mouseSign = 1f;   // +1 دفع، -1 جذب
 
     void Start()
     {
@@ -106,6 +105,28 @@ public class FluidClavetSim : MonoBehaviour
         SetupRenderArgs();
         ready = true;
     }
+
+    // ================= واجهة التحكم العامة (للـ UI) =================
+
+    /// <summary>إعادة تشغيل السائل: يعيد الجسيمات لمواقعها الابتدائية</summary>
+    public void ResetFluid()
+    {
+        if (!ready) return;
+        SpawnParticles();
+        Debug.Log("[FluidClavet] تمت إعادة تشغيل السائل");
+    }
+
+    /// <summary>وضع الماوس: 1 = دفع، -1 = جذب (يُربط بأزرار UI)</summary>
+    public void SetPushMode() { mouseSign = 1f; enableMouse = true; }
+    public void SetPullMode() { mouseSign = -1f; enableMouse = true; }
+    public void ToggleMouse(bool on) { enableMouse = on; }
+
+    /// <summary>ضبط القوة ونصف القطر من المنزلقات</summary>
+    public void SetMouseStrength(float v) { mouseStrength = v; }
+    public void SetMouseRadius(float v) { mouseRadius = v; }
+    public void SetGravity(float v) { gravity = v; }
+
+    // ==============================================================
 
     void CreateBuffers()
     {
@@ -149,6 +170,41 @@ public class FluidClavetSim : MonoBehaviour
         positionBuffer.SetData(positions);
         predictedPositionBuffer.SetData(positions);
         velocityBuffer.SetData(velocities);
+
+        // حساب restDensity تلقائياً من التوزيع الابتدائي (نفس آلية الدلو).
+        // ضروري: القيمة الصحيحة تعتمد على smoothingRadius وكثافة الجسيمات -
+        // بدونها، تغيير smoothingRadius يجعل السائل يتبعثر (كثافة سكون خاطئة).
+        if (autoRestDensity)
+        {
+            restDensity = EstimateRestDensity(positions);
+            Debug.Log($"[FluidClavet] restDensity محسوبة تلقائياً = {restDensity:F3}");
+        }
+    }
+
+    // يقدّر كثافة السكون من متوسط الكثافة الفعلية لعيّنة من الجسيمات
+    float EstimateRestDensity(Vector3[] positions)
+    {
+        float h = smoothingRadius;
+        float h2 = h * h;
+        int samples = Mathf.Min(150, numParticles);
+        float sum = 0f;
+        for (int si = 0; si < samples; si++)
+        {
+            int i = (int)((long)si * numParticles / samples);
+            float density = 0f;
+            for (int j = 0; j < numParticles; j++)
+            {
+                if (j == i) continue;
+                float sqr = (positions[j] - positions[i]).sqrMagnitude;
+                if (sqr < h2)
+                {
+                    float q = 1f - Mathf.Sqrt(sqr) / h;
+                    density += q * q;
+                }
+            }
+            sum += density;
+        }
+        return sum / samples;
     }
 
     void CacheKernels()
@@ -220,34 +276,25 @@ public class FluidClavetSim : MonoBehaviour
         // 1. قوى خارجية (جاذبية) + تنبؤ بالموقع - مرة واحدة، مثل ApplyGravity بالدلو
         compute.Dispatch(kExternalForces, groups, 1, 1);
 
-        // 2-6. حلقة الاسترخاء: إعادة بناء الشبكة + ترتيب + كثافة + إزاحة، عدة مرات
-        //      (نفس فلسفة الدلو: تحسين تدريجي لدقة الكثافة، بلا تكرار للجاذبية)
+        // 2-4. بناء الشبكة المكانية مرة واحدة بالإطار (تحسين PBF - Macklin & Müller 2013)
+        //      الجيران يتغيّرون قليلاً جداً داخل الإطار الواحد، فلا داعي لإعادة
+        //      الفرز الكامل (أثقل خطوة) في كل تكرار. هذا يخفّض التكلفة من
+        //      iterations×(فرز+كثافة+استرخاء) إلى فرز_واحد + iterations×(كثافة+استرخاء).
+        compute.Dispatch(kUpdateHash, groups, 1, 1);
+        spatialHash.Run();
+        compute.Dispatch(kReorder, groups, 1, 1);
+        compute.Dispatch(kReorderCopyBack, groups, 1, 1);
+
+        // 5-6. حلقة الاسترخاء: كثافة + إزاحة فقط (بدون إعادة فرز)
+        //      نفس فلسفة الدلو: تحسين تدريجي لدقة الكثافة، بلا تكرار للجاذبية
         for (int it = 0; it < iterations; it++)
         {
-            RunSimulationStep(dt, groups);
+            compute.Dispatch(kCalculateDensity, groups, 1, 1);
+            compute.Dispatch(kRelax, groups, 1, 1);
         }
 
         // 7. تحديث السرعة + الموقع النهائي + التصادم - مرة واحدة بعد الحلقة، مثل ComputeVelocity بالدلو
         compute.Dispatch(kUpdatePositions, groups, 1, 1);
-    }
-
-    void RunSimulationStep(float dt, int groups)
-    {
-        // 2. بناء المفاتيح المكانية
-        compute.Dispatch(kUpdateHash, groups, 1, 1);
-
-        // 3. الترتيب المكاني (محرّك Sebastian المتوازي)
-        spatialHash.Run();
-
-        // 4. إعادة ترتيب الجسيمات بالذاكرة
-        compute.Dispatch(kReorder, groups, 1, 1);
-        compute.Dispatch(kReorderCopyBack, groups, 1, 1);
-
-        // 5. حساب الكثافة
-        compute.Dispatch(kCalculateDensity, groups, 1, 1);
-
-        // 6. الاسترخاء (Clavet) - نفس معادلة الدلو بالضبط
-        compute.Dispatch(kRelax, groups, 1, 1);
     }
 
     void SetConstants(float dt)
@@ -267,37 +314,56 @@ public class FluidClavetSim : MonoBehaviour
         Matrix4x4 localToWorld = Matrix4x4.TRS(transform.position, transform.rotation, boundsSize);
         compute.SetMatrix("localToWorld", localToWorld);
         compute.SetMatrix("worldToLocal", localToWorld.inverse);
+        compute.SetFloat("wallRestitution", 0.1f);
 
-        // --- ثوابت السطل الأسطواني ---
-        compute.SetInt("useBucket", useBucket ? 1 : 0);
-        compute.SetFloat("bucketRadius", bucketRadius);
-        compute.SetFloat("bucketHeight", bucketHeight);
-        compute.SetFloat("wallRestitution", wallRestitution);
+        // --- ثوابت تفاعل الماوس ---
+        compute.SetInt("mouseActive", mouseActiveNow ? 1 : 0);
+        compute.SetVector("mousePos", mouseWorldPos);
+        compute.SetFloat("mouseRadius", mouseRadius);
+        compute.SetFloat("mouseStrength", mouseStrength * mouseSign);
+    }
 
-        Vector3 bucketPos = bucketTransform != null ? bucketTransform.position : transform.position;
-        Quaternion bucketRot = bucketTransform != null ? bucketTransform.rotation : Quaternion.identity;
-        compute.SetVector("bucketCenter", bucketPos);
-        compute.SetVector("bucketRotation", new Vector4(bucketRot.x, bucketRot.y, bucketRot.z, bucketRot.w));
+    void Update()
+    {
+        UpdateMouseInteraction();
+        RenderParticles();
+    }
 
-        // حساب قصور حركة السطل (تسارع السطل يُطبّق عكسياً على السائل)
-        Vector3 externalAccel = Vector3.zero;
-        if (useBucket && bucketTransform != null && dt > 0)
+    // يقرأ الماوس ويسقط موقعه إلى فضاء العالم عند عمق السائل
+    void UpdateMouseInteraction()
+    {
+        mouseActiveNow = false;
+        if (!enableMouse) return;
+
+        bool leftHeld = Input.GetMouseButton(0);    // دفع
+        bool rightHeld = Input.GetMouseButton(1);   // جذب
+        if (!leftHeld && !rightHeld) return;
+
+        Camera cam = interactionCamera != null ? interactionCamera : Camera.main;
+        if (cam == null)
         {
-            Vector3 bucketVel = (bucketPos - prevBucketPos) / dt;
-            Vector3 bucketAccel = (bucketVel - prevBucketVel) / dt;
-            // سقف يمنع الانفجار عند الحركة المفاجئة
-            if (bucketAccel.magnitude > maxInertiaAccel)
-                bucketAccel = bucketAccel.normalized * maxInertiaAccel;
-            externalAccel = -bucketAccel;   // القصور عكس اتجاه التسارع
-            prevBucketVel = bucketVel;
-            prevBucketPos = bucketPos;
+            Debug.LogWarning("[FluidClavet] لا توجد كاميرا! اربط Interaction Camera أو ضع tag=MainCamera على كاميرتك");
+            return;
         }
-        compute.SetVector("externalAccel", externalAccel);
+
+        // نسقط الماوس على مستوى يواجه الكاميرا ويمرّ بمركز السائل.
+        // هذا يعمل من أي زاوية كاميرا (أمامية، جانبية، علوية).
+        Ray ray = cam.ScreenPointToRay(Input.mousePosition);
+        Vector3 planeNormal = -cam.transform.forward;   // المستوى يواجه الكاميرا
+        Plane plane = new Plane(planeNormal, transform.position);
+        if (plane.Raycast(ray, out float enter))
+        {
+            mouseWorldPos = ray.GetPoint(enter);
+            mouseActiveNow = true;
+            // الوضع (دفع/جذب) يُدار من أزرار UI عبر mouseSign.
+            // زر الماوس الأيمن يجذب مؤقتاً بغض النظر عن وضع UI (للراحة)
+            if (rightHeld && !leftHeld) mouseSign = -1f;
+        }
     }
 
     void LateUpdate()
     {
-        RenderParticles();
+        // العرض يتم في Update - محفوظ للتوافق
     }
 
     void RenderParticles()
@@ -319,40 +385,20 @@ public class FluidClavetSim : MonoBehaviour
 
     void OnDrawGizmos()
     {
-        if (useBucket)
-        {
-            // ارسم السطل الأسطواني
-            Vector3 c = bucketTransform != null ? bucketTransform.position : transform.position;
-            Gizmos.color = Color.cyan;
-            // دوائر علوية وسفلية (تقريب)
-            int seg = 24;
-            float halfH = bucketHeight * 0.5f;
-            Vector3 prevTop = Vector3.zero, prevBot = Vector3.zero;
-            for (int i = 0; i <= seg; i++)
-            {
-                float a = i / (float)seg * Mathf.PI * 2f;
-                Vector3 off = new Vector3(Mathf.Cos(a) * bucketRadius, 0, Mathf.Sin(a) * bucketRadius);
-                Vector3 top = c + off + Vector3.up * halfH;
-                Vector3 bot = c + off - Vector3.up * halfH;
-                if (i > 0)
-                {
-                    Gizmos.DrawLine(prevTop, top);
-                    Gizmos.DrawLine(prevBot, bot);
-                }
-                Gizmos.DrawLine(bot, top);
-                prevTop = top; prevBot = bot;
-            }
-        }
-        else
-        {
-            Gizmos.color = Color.cyan;
-            Gizmos.matrix = Matrix4x4.TRS(transform.position, transform.rotation, Vector3.one);
-            Gizmos.DrawWireCube(Vector3.zero, boundsSize);
-            Gizmos.matrix = Matrix4x4.identity;
-        }
+        // حدود الصندوق
+        Gizmos.color = Color.cyan;
+        Gizmos.matrix = Matrix4x4.TRS(transform.position, transform.rotation, Vector3.one);
+        Gizmos.DrawWireCube(Vector3.zero, boundsSize);
+        Gizmos.matrix = Matrix4x4.identity;
         // منطقة التوليد
         Gizmos.color = new Color(1, 1, 0, 0.4f);
         Gizmos.DrawWireCube(spawnCentre, spawnSize);
+        // دائرة تأثير الماوس (وقت التشغيل): أحمر=دفع، أخضر=جذب
+        if (Application.isPlaying && mouseActiveNow)
+        {
+            Gizmos.color = mouseSign > 0 ? Color.red : Color.green;
+            Gizmos.DrawWireSphere(mouseWorldPos, mouseRadius);
+        }
     }
 
     void OnDestroy()

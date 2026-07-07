@@ -52,25 +52,13 @@ const float4x4 localToWorld;
 const float4x4 worldToLocal;
 
 // --- حدود السطل الأسطواني (للدمج مع مشروع البندول) ---
-const uint useBucket; // 1 = سطل أسطواني، 0 = صندوق
-const float3 bucketCenter; // مركز السطل بالعالم
-const float4 bucketRotation; // دوران السطل (كواتيرنيون)
-const float bucketRadius; // نصف قطر السطل
-const float bucketHeight; // ارتفاع السطل
-const float3 externalAccel; // قصور حركة السطل (يُطبّق على السائل)
 const float wallRestitution; // ارتداد الجدار
 
-// دوال الكواتيرنيون (لدوران السطل)
-float4 QuatInverse(float4 q)
-{
-    return float4(-q.x, -q.y, -q.z, q.w) / dot(q, q);
-}
-float3 QuatRotate(float4 q, float3 v)
-{
-    float3 u = q.xyz;
-    float s = q.w;
-    return 2.0 * dot(u, v) * u + (s * s - dot(u, u)) * v + 2.0 * s * cross(u, v);
-}
+// --- تفاعل الماوس ---
+const uint mouseActive; // 1 = الماوس يؤثّر الآن
+const float3 mousePos; // موقع الماوس بالعالم (مسقط على مستوى السائل)
+const float mouseRadius; // نصف قطر تأثير الماوس
+const float mouseStrength; // قوة الدفع (موجب=دفع، سالب=جذب)
 
 // ============================================================
 //  دوال Clavet
@@ -127,47 +115,6 @@ void ResolveCollisions(inout float3 pos, inout float3 vel, float damping)
     vel = mul(localToWorld, float4(velLocal, 0)).xyz;
 }
 
-// تصادم السطل الأسطواني (مفتوح من الأعلى - مثل مشروع البندول)
-void ResolveBucketCollision(inout float3 pos, inout float3 vel)
-{
-    // حوّل لفضاء السطل المحلي
-    float4 invRot = QuatInverse(bucketRotation);
-    float3 local = QuatRotate(invRot, pos - bucketCenter);
-    float3 localVel = QuatRotate(invRot, vel);
-
-    float halfH = bucketHeight * 0.5;
-
-    // القاع
-    if (local.y < -halfH)
-    {
-        local.y = -halfH;
-        if (localVel.y < 0)
-            localVel.y *= -wallRestitution;
-    }
-    // الجدار الجانبي (أسطوانة) - مفتوح من الأعلى فلا سقف
-    float2 radial = float2(local.x, local.z);
-    float dist = length(radial);
-    if (dist > bucketRadius)
-    {
-        float2 dir = radial / dist;
-        local.x = dir.x * bucketRadius;
-        local.z = dir.y * bucketRadius;
-        // أزل السرعة المتجهة للخارج
-        float2 velRadial = float2(localVel.x, localVel.z);
-        float outward = dot(velRadial, dir);
-        if (outward > 0)
-        {
-            velRadial -= dir * outward * (1.0 + wallRestitution);
-            localVel.x = velRadial.x;
-            localVel.z = velRadial.y;
-        }
-    }
-
-    // ارجع لفضاء العالم
-    pos = bucketCenter + QuatRotate(bucketRotation, local);
-    vel = QuatRotate(bucketRotation, localVel);
-}
-
 // ============================================================
 //  1. القوى الخارجية (جاذبية) + التنبؤ بالموقع
 // ============================================================
@@ -177,14 +124,28 @@ void ExternalForces(uint3 id : SV_DispatchThreadID)
     if (id.x >= numParticles)
         return;
 
-    // جاذبية + قصور حركة السطل (لو مفعّل)
+    float3 pos = Positions[id.x];
     float3 accel = float3(0, -gravity, 0);
-    if (useBucket == 1)
-        accel += externalAccel;
+
+    // قوة الماوس: دفع/جذب الجسيمات القريبة من مؤشر الماوس
+    if (mouseActive == 1)
+    {
+        float3 toParticle = pos - mousePos;
+        float dist = length(toParticle);
+        if (dist < mouseRadius && dist > 0.0001)
+        {
+            // قوة تتناقص مع المسافة (أقوى بالمركز)
+            float falloff = 1.0 - dist / mouseRadius;
+            float3 dir = toParticle / dist;
+            // موجب = دفع للخارج، سالب = جذب للداخل
+            accel += dir * mouseStrength * falloff;
+        }
+    }
+
     Velocities[id.x] += accel * deltaTime;
 
     // موقع متنبّأ (نبني الشبكة عليه - أكثر استقراراً)
-    PredictedPositions[id.x] = Positions[id.x] + Velocities[id.x] * deltaTime;
+    PredictedPositions[id.x] = pos + Velocities[id.x] * deltaTime;
 }
 
 // ============================================================
@@ -352,11 +313,8 @@ void UpdatePositions(uint3 id : SV_DispatchThreadID)
     // ضروري للجسيمات الداخلية التي لا تلامس الجدران أبداً (وإلا تدافع دائم بلا استقرار)
     vel *= velocityDamping;
 
-    // التصادم: سطل أسطواني أو صندوق
-    if (useBucket == 1)
-        ResolveBucketCollision(pos, vel);
-    else
-        ResolveCollisions(pos, vel, collisionDamping);
+    // التصادم مع حدود الصندوق
+    ResolveCollisions(pos, vel, collisionDamping);
 
     Positions[id.x] = pos;
     Velocities[id.x] = vel;

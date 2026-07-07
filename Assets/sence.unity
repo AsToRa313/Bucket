@@ -235,7 +235,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 611624494}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: ee00c8613187a7a41bc35309806b9d21, type: 3}
   m_Name: 
@@ -246,6 +246,7 @@ MonoBehaviour:
   canvasPainter: {fileID: 1616864327}
   toggleKey: 282
   startVisible: 1
+  uiScale: 1.2
 --- !u!4 &611624496
 Transform:
   m_ObjectHideFlags: 0
@@ -565,7 +566,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SPHSimulation1
   compute: {fileID: 7200000, guid: b3ba207ba05499b46896ceeec3d1f8fc, type: 3}
-  numParticles: 10000
+  numParticles: 100000
   iterations: 4
   smoothingRadius: 0.015
   autoRestDensity: 1
