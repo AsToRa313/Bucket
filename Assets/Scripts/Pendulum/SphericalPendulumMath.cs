@@ -2,7 +2,8 @@ using UnityEngine;
 
 public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
 {
-    public enum BucketShape { Cylindrical, Conical, Cubic }
+    // أبقينا فقط الشكل الأسطواني لتنظيف الواجهة تماماً
+    public enum BucketShape { Cylindrical }
 
     [Header("Data Architecture")]
     public PendulumData data;
@@ -23,6 +24,12 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
     public float maxPaintMass = 2.0f;
     public float currentPaintMass = 2.0f;
     public float drainRate = 0.05f;
+
+    [Header("Rope Physics (Elasticity)")]
+    public bool isElastic = false;
+    public float springConstant = 150f;
+    public float springDamping = 5f;
+    public float maxElasticLength = 7f;
 
     [Header("Torsional Twist Settings")]
     public float torsionalStiffness = 0.8f;
@@ -72,7 +79,6 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
         float z = horizontal * Mathf.Sin(p);
 
         Vector3 direction = new Vector3(x, y, z).normalized;
-        // تثبيت الموقع دايماً على طول الحبل الأساسي (لازق بالحبل)
         transform.position = pivot.position + direction * baseLength;
         velocity = Vector3.zero;
         isDragging = false;
@@ -88,6 +94,8 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
             ropeRenderer = gameObject.AddComponent<LineRenderer>();
 
         SetupRopeRenderer();
+
+        currentPaintMass = maxPaintMass;
 
         if (pivot != null)
         {
@@ -107,7 +115,6 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
         ropeRenderer.startWidth = 0.04f;
         ropeRenderer.endWidth = 0.02f;
         ropeRenderer.positionCount = ropeSegments;
-        // إصلاح الطيران بالهواء: إجبار الرندر على استخدام إحداثيات العالم
         ropeRenderer.useWorldSpace = true;
     }
 
@@ -120,15 +127,10 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
         float totalMass = emptyBucketMass + currentPaintMass;
         float massDerivative = (currentPaintMass > 0) ? drainRate : 0f;
 
-        float dragCoefficient = 1.0f;
-        if (shape == BucketShape.Cylindrical) dragCoefficient = 0.82f;
-        else if (shape == BucketShape.Cubic) dragCoefficient = 1.05f;
-        else if (shape == BucketShape.Conical) dragCoefficient = 0.50f;
+        // تم تثبيت معامل السحب للشكل الأسطواني مباشرة لحذف الحسابات الزائدة
+        float dragCoefficient = 0.82f;
 
-        float totalDamping = ((airDamping * dragCoefficient) + massDerivative)
-                             / totalMass + pivotFriction;
-
-        // --- محاكاة الجاذبية للحفاظ على فيزياء البندول (البطء) دون فصل السطل ---
+        float totalDamping = ((airDamping * dragCoefficient) + massDerivative) / totalMass + pivotFriction;
         float simulatedGravity = gravity * (baseLength / effectiveLength);
 
         velocity += Vector3.down * simulatedGravity * Time.fixedDeltaTime;
@@ -137,33 +139,64 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
         Vector3 nextPosition = transform.position + velocity * Time.fixedDeltaTime;
         Vector3 offset = nextPosition - pivot.position;
         float currentDistance = offset.magnitude;
+        Vector3 ropeDirection = (currentDistance > 0.0001f) ? offset.normalized : Vector3.down;
 
-        // --- إجبار السطل على البقاء ملتصقاً بالحبل (baseLength) ---
-        if (currentDistance >= baseLength)
+        if (isElastic)
         {
-            Vector3 ropeDirection = offset.normalized;
-            transform.position = pivot.position + ropeDirection * baseLength;
-            float radialVelocity = Vector3.Dot(velocity, ropeDirection);
-            if (radialVelocity > 0f)
-                velocity -= ropeDirection * radialVelocity;
+            if (currentDistance > baseLength)
+            {
+                float stretch = currentDistance - baseLength;
+                float springForce = stretch * springConstant;
+
+                float radialVelocity = Vector3.Dot(velocity, ropeDirection);
+                float dampForce = radialVelocity * springDamping;
+
+                float totalRestoringAccel = (springForce + dampForce) / totalMass;
+                velocity -= ropeDirection * (totalRestoringAccel * Time.fixedDeltaTime);
+            }
+
+            nextPosition = transform.position + velocity * Time.fixedDeltaTime;
+            float nextDistance = (nextPosition - pivot.position).magnitude;
+
+            if (nextDistance > maxElasticLength)
+            {
+                Vector3 nextRopeDirection = (nextPosition - pivot.position).normalized;
+                nextPosition = pivot.position + nextRopeDirection * maxElasticLength;
+
+                float radialVelocity = Vector3.Dot(velocity, nextRopeDirection);
+                if (radialVelocity > 0f)
+                    velocity -= nextRopeDirection * radialVelocity;
+            }
+
+            transform.position = nextPosition;
         }
         else
         {
-            transform.position = nextPosition;
+            if (currentDistance >= baseLength)
+            {
+                transform.position = pivot.position + ropeDirection * baseLength;
+                float radialVelocity = Vector3.Dot(velocity, ropeDirection);
+                if (radialVelocity > 0f)
+                    velocity -= ropeDirection * radialVelocity;
+            }
+            else
+            {
+                transform.position = nextPosition;
+            }
         }
 
         SyncAnglesFromPosition();
 
         float I_y = 0.5f * totalMass * (bucketRadius * bucketRadius);
-        float torsionalTorque = (-torsionalStiffness * twistAngle)
-                                 - (torsionalDamping * twistVelocity);
+        float torsionalTorque = (-torsionalStiffness * twistAngle) - (torsionalDamping * twistVelocity);
         float twistAcceleration = torsionalTorque / I_y;
         twistVelocity += twistAcceleration * Time.fixedDeltaTime;
         twistAngle += twistVelocity * Time.fixedDeltaTime;
 
         if (Mathf.Abs(theta) < 0.02f
             && velocity.magnitude < 0.05f
-            && Mathf.Abs(twistVelocity) < 0.05f)
+            && Mathf.Abs(twistVelocity) < 0.05f
+            && (!isElastic || Mathf.Abs(currentDistance - baseLength) < 0.05f))
         {
             transform.position = pivot.position + Vector3.down * baseLength;
             velocity = Vector3.zero;
@@ -178,6 +211,32 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
         UpdateSharedData();
     }
 
+    void UpdateMassAndCOM()
+    {
+        if (currentPaintMass <= 0f)
+        {
+            currentPaintMass = 0f;
+            effectiveLength = baseLength + bucketHeight;
+            return;
+        }
+
+        currentPaintMass -= drainRate * Time.fixedDeltaTime;
+
+        if (currentPaintMass <= 0f)
+        {
+            currentPaintMass = 0f;
+            effectiveLength = baseLength + bucketHeight;
+            return;
+        }
+
+        float fillRatio = maxPaintMass > 0 ? currentPaintMass / maxPaintMass : 0;
+
+        // تم تبسيط حساب مركز الثقل مباشرة للأسطوانة بدون Switch
+        float z_cm = (bucketHeight * fillRatio) / 2f;
+
+        effectiveLength = baseLength + (bucketHeight - z_cm);
+    }
+
     void SyncAnglesFromPosition()
     {
         Vector3 localPos = transform.position - pivot.position;
@@ -190,9 +249,7 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
         if (Time.fixedDeltaTime > 0)
         {
             thetaVelocity = (theta - lastTheta) / Time.fixedDeltaTime;
-            phiVelocity = Mathf.DeltaAngle(lastPhi * Mathf.Rad2Deg,
-                                              phi * Mathf.Rad2Deg)
-                            * Mathf.Deg2Rad / Time.fixedDeltaTime;
+            phiVelocity = Mathf.DeltaAngle(lastPhi * Mathf.Rad2Deg, phi * Mathf.Rad2Deg) * Mathf.Deg2Rad / Time.fixedDeltaTime;
         }
     }
 
@@ -209,12 +266,16 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
         if (pivot == null) return;
         dragDepth += Input.GetAxis("Mouse ScrollWheel") * 5f;
 
-        Vector3 mouseScreenPoint = new Vector3(
-            Input.mousePosition.x, Input.mousePosition.y, dragDepth);
+        Vector3 mouseScreenPoint = new Vector3(Input.mousePosition.x, Input.mousePosition.y, dragDepth);
         Vector3 mouseWorldPoint = Camera.main.ScreenToWorldPoint(mouseScreenPoint);
 
-        // إبقاء السطل لازقاً بالحبل أثناء سحبه بالماوس
-        Vector3 offset = (mouseWorldPoint - pivot.position).normalized * baseLength;
+        Vector3 offset = mouseWorldPoint - pivot.position;
+        float currentMaxLimit = isElastic ? maxElasticLength : baseLength;
+        if (offset.magnitude > currentMaxLimit)
+        {
+            offset = offset.normalized * currentMaxLimit;
+        }
+
         Vector3 newPosition = pivot.position + offset;
 
         if (Time.deltaTime > 0)
@@ -229,38 +290,12 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
 
     void OnMouseUp() { isDragging = false; }
 
-    void UpdateMassAndCOM()
-    {
-        if (currentPaintMass > 0)
-        {
-            currentPaintMass -= drainRate * Time.fixedDeltaTime;
-            if (currentPaintMass < 0) currentPaintMass = 0;
-        }
-
-        float fillRatio = maxPaintMass > 0 ? currentPaintMass / maxPaintMass : 0;
-        float z_cm = 0f;
-
-        switch (shape)
-        {
-            case BucketShape.Conical:
-                z_cm = (3f / 4f) * bucketHeight * Mathf.Pow(fillRatio, 1f / 3f);
-                break;
-            default:
-                z_cm = (bucketHeight * fillRatio) / 2f;
-                break;
-        }
-
-        effectiveLength = baseLength + (bucketHeight - z_cm);
-    }
-
     void UpdateRopeRenderer()
     {
         if (pivot == null || ropeRenderer == null) return;
 
         Vector3 p0 = pivot.position;
         Vector3 comPosition = transform.position;
-
-        // --- استخدام متغير الإزاحة الجديد للرسم الشكلي فقط ---
         float offsetToHandle = ropeAttachmentOffset;
 
         Vector3 directionToPivot = (p0 - comPosition).normalized;
@@ -289,9 +324,7 @@ public class SphericalPendulumMath : MonoBehaviour, IBucketPhysics
         for (int i = 0; i < ropeSegments; i++)
         {
             float t = i / (float)(ropeSegments - 1);
-            Vector3 point = Mathf.Pow(1f - t, 2) * p0
-                          + 2f * (1f - t) * t * p1
-                          + Mathf.Pow(t, 2) * actualHandlePos;
+            Vector3 point = Mathf.Pow(1f - t, 2) * p0 + 2f * (1f - t) * t * p1 + Mathf.Pow(t, 2) * actualHandlePos;
             ropeRenderer.SetPosition(i, point);
         }
 

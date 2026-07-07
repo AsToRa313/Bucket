@@ -82,7 +82,7 @@ Material:
     m_Colors:
     - _Color: {r: 1, g: 1, b: 1, a: 1}
     - _ColorFast: {r: 0.9, g: 0.9, b: 1, a: 1}
-    - _ColorSlow: {r: 0.2, g: 0.5, b: 0.95, a: 1}
+    - _ColorSlow: {r: 0.95, g: 0.35, b: 0.1, a: 1}
     - _EmissionColor: {r: 0, g: 0, b: 0, a: 1}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

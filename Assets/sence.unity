@@ -548,6 +548,10 @@ MonoBehaviour:
   maxPaintMass: 10
   currentPaintMass: 5
   drainRate: 0.01
+  isElastic: 1
+  springConstant: 150
+  springDamping: 5
+  maxElasticLength: 4
   torsionalStiffness: 0.8
   torsionalDamping: 0.05
   bucketRadius: 1.5
@@ -567,13 +571,13 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SPHSimulation1
   compute: {fileID: 7200000, guid: b3ba207ba05499b46896ceeec3d1f8fc, type: 3}
-  numParticles: 80000
+  numParticles: 50000
   iterations: 1
   smoothingRadius: 0.02
   autoRestDensity: 1
   restDensity: 20
-  stiffness: 50
-  nearStiffness: 75
+  stiffness: 1
+  nearStiffness: 2
   velocityDamping: 0.98
   gravity: 9.81
   maxInertiaAccel: 0.5
@@ -592,13 +596,14 @@ MonoBehaviour:
   dropletHeight: 1.5
   dropletApproachSpeed: 0
   holes:
-  - localPosition: {x: 0, y: -0.3, z: 0}
-    radius: 0.01
+  - shape: 0
+    localPosition: {x: 0, y: -0.3, z: 0}
+    size: {x: 0.01, y: 0.5, z: 0.001}
   enableVortex: 0
   vortexRange: 6
   vortexPull: 1
   vortexSpin: 8
-  useFixedColors: 0
+  useFixedColors: 1
   canvas: {fileID: 1616864327}
   autoCanvasY: 1
   autoCanvasSize: 1

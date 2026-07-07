@@ -22,6 +22,13 @@ public class FluidClavetSim : MonoBehaviour
     [Tooltip("تكرارات الاسترخاء (أعلى = أكثر استقراراً، أبطأ)")]
     public int iterations = 2;
 
+    // ===== أنواع السوائل الجاهزة (Presets) =====
+    public enum FluidType { Custom, Water, Paint, Honey, Oil, Lava }
+    [Header("نوع السائل (Fluid Preset)")]
+    [Tooltip("اختر نوعاً جاهزاً - يضبط كل القيم واللون تلقائياً. Custom = تحكّم يدوي")]
+    public FluidType fluidType = FluidType.Water;
+    FluidType lastAppliedType = FluidType.Custom;
+
     [Header("معاملات Clavet")]
     public float smoothingRadius = 0.2f;
     public float restDensity = 10f;
@@ -29,6 +36,13 @@ public class FluidClavetSim : MonoBehaviour
     public bool autoRestDensity = true;
     public float stiffness = 0.5f;
     public float nearStiffness = 0.5f;
+    [Header("اللزوجة (Viscosity) - نوع السائل")]
+    [Tooltip("قوة اللزوجة: 0 = ماء رقيق، عالي = عسل/دهان سميك")]
+    [Range(0f, 12f)]
+    public float viscosityStrength = 0f;
+    [Tooltip("اللزوجة التربيعية (للسرعات العالية) - عادة أصغر من الخطية")]
+    [Range(0f, 5f)]
+    public float viscosityBeta = 0f;
     public float gravity = 9.81f;
     [Range(0f, 1f)]
     public float collisionDamping = 0.4f;
@@ -82,7 +96,7 @@ public class FluidClavetSim : MonoBehaviour
 
     // معرّفات الـ kernels
     int kExternalForces, kUpdateHash, kReorder, kReorderCopyBack;
-    int kCalculateDensity, kRelax, kUpdatePositions;
+    int kCalculateDensity, kViscosity, kRelax, kUpdatePositions;
     const int THREADS = 256;
 
     bool ready = false;
@@ -92,9 +106,20 @@ public class FluidClavetSim : MonoBehaviour
     Vector3 mouseWorldPos = Vector3.zero;
     float mouseSign = 1f;   // +1 دفع، -1 جذب
 
+    // يُستدعى عند تغيير قيمة بالإنسبكتر - يطبّق الـ preset فوراً للمعاينة
+    void OnValidate()
+    {
+        if (fluidType != FluidType.Custom && fluidType != lastAppliedType)
+            ApplyFluidPreset(fluidType);
+    }
+
     void Start()
     {
         if (compute == null) { Debug.LogError("Compute فارغ!"); return; }
+
+        // طبّق نوع السائل المختار (يضبط القيم واللون) قبل التوليد
+        if (fluidType != FluidType.Custom)
+            ApplyFluidPreset(fluidType);
 
         numParticles = particlesPerAxis * particlesPerAxis * particlesPerAxis;
         Debug.Log($"[FluidClavet] عدد الجسيمات = {numParticles}");
@@ -125,6 +150,55 @@ public class FluidClavetSim : MonoBehaviour
     public void SetMouseStrength(float v) { mouseStrength = v; }
     public void SetMouseRadius(float v) { mouseRadius = v; }
     public void SetGravity(float v) { gravity = v; }
+
+    // للـ UI: تغيير نوع السائل وقت التشغيل (يطبّق القيم واللون فوراً)
+    public void SetFluidType(int typeIndex)
+    {
+        ApplyFluidPreset((FluidType)typeIndex);
+    }
+
+    // ===== تطبيق نوع السائل: يضبط القيم الفيزيائية واللون =====
+    public void ApplyFluidPreset(FluidType type)
+    {
+        fluidType = type;
+        lastAppliedType = type;
+        switch (type)
+        {
+            case FluidType.Water:   // ماء: رقيق جداً، سيولة عالية، يتناثر بحرّية
+                viscosityStrength = 0f; viscosityBeta = 0f;
+                stiffness = 0.6f; nearStiffness = 0.5f;
+                velocityDamping = 0.995f;
+                fluidColor = new Color(0.25f, 0.55f, 0.95f, 1f);
+                break;
+            case FluidType.Paint:   // دهان: لزج متماسك، يتدفّق ببطء
+                viscosityStrength = 3f; viscosityBeta = 1f;
+                stiffness = 0.5f; nearStiffness = 0.6f;
+                velocityDamping = 0.96f;
+                fluidColor = new Color(0.1f, 0.1f, 0.1f, 1f);
+                break;
+            case FluidType.Honey:   // عسل: لزوجة قصوى، بطيء جداً وكتلة متماسكة
+                viscosityStrength = 8f; viscosityBeta = 3f;
+                stiffness = 0.4f; nearStiffness = 0.7f;
+                velocityDamping = 0.92f;
+                fluidColor = new Color(0.95f, 0.7f, 0.15f, 1f);
+                break;
+            case FluidType.Oil:     // زيت: لزوجة خفيفة-متوسطة، انسياب ناعم
+                viscosityStrength = 1.5f; viscosityBeta = 0.4f;
+                stiffness = 0.5f; nearStiffness = 0.5f;
+                velocityDamping = 0.98f;
+                fluidColor = new Color(0.35f, 0.28f, 0.12f, 1f);
+                break;
+            case FluidType.Lava:    // حمم: لزوجة عالية، ثقيل بطيء
+                viscosityStrength = 6f; viscosityBeta = 2f;
+                stiffness = 0.45f; nearStiffness = 0.65f;
+                velocityDamping = 0.93f;
+                fluidColor = new Color(0.95f, 0.35f, 0.1f, 1f);
+                break;
+            case FluidType.Custom:  // يدوي: لا نغيّر شيئاً
+                break;
+        }
+        Debug.Log("[FluidClavet] نوع السائل: " + type);
+    }
 
     // ==============================================================
 
@@ -214,12 +288,13 @@ public class FluidClavetSim : MonoBehaviour
         kReorder = compute.FindKernel("Reorder");
         kReorderCopyBack = compute.FindKernel("ReorderCopyBack");
         kCalculateDensity = compute.FindKernel("CalculateDensity");
+        kViscosity = compute.FindKernel("ApplyViscosity");
         kRelax = compute.FindKernel("DoubleDensityRelax");
         kUpdatePositions = compute.FindKernel("UpdatePositions");
 
         // ربط الـ buffers بكل الـ kernels التي تحتاجها
         int[] allKernels = { kExternalForces, kUpdateHash, kReorder, kReorderCopyBack,
-                             kCalculateDensity, kRelax, kUpdatePositions };
+                             kCalculateDensity, kViscosity, kRelax, kUpdatePositions };
         foreach (int k in allKernels)
         {
             compute.SetBuffer(k, "Positions", positionBuffer);
@@ -285,6 +360,10 @@ public class FluidClavetSim : MonoBehaviour
         compute.Dispatch(kReorder, groups, 1, 1);
         compute.Dispatch(kReorderCopyBack, groups, 1, 1);
 
+        // اللزوجة: تقارب سرعات الجيران (مرة واحدة، على السرعات، بعد بناء الشبكة).
+        // تُطبّق قبل الاسترخاء لأنها تعمل على السرعة بينما الاسترخاء على الموقع.
+        compute.Dispatch(kViscosity, groups, 1, 1);
+
         // 5-6. حلقة الاسترخاء: كثافة + إزاحة فقط (بدون إعادة فرز)
         //      نفس فلسفة الدلو: تحسين تدريجي لدقة الكثافة، بلا تكرار للجاذبية
         for (int it = 0; it < iterations; it++)
@@ -308,6 +387,8 @@ public class FluidClavetSim : MonoBehaviour
         compute.SetFloat("restDensity", restDensity);
         compute.SetFloat("stiffness", stiffness);
         compute.SetFloat("nearStiffness", nearStiffness);
+        compute.SetFloat("viscosityStrength", viscosityStrength);
+        compute.SetFloat("viscosityBeta", viscosityBeta);
         compute.SetVector("boundsSize", boundsSize);
 
         // مصفوفات التحويل للصندوق (نمط Sebastian)
@@ -381,6 +462,26 @@ public class FluidClavetSim : MonoBehaviour
 
         renderBounds = new Bounds(transform.position, boundsSize * 2f);
         Graphics.DrawMeshInstancedIndirect(particleMesh, 0, particleMaterial, renderBounds, argsBuffer);
+    }
+
+    /// <summary>إعادة بناء السائل بالكامل (لتغيير عدد الجزيئات بأمان)</summary>
+    public void FullReset()
+    {
+        if (!ready) return;
+        ready = false;
+
+        // تحرير الـ Buffers القديمة ضروري جداً عشان ما يصير Memory Leak أو يفرش
+        OnDestroy();
+
+        numParticles = particlesPerAxis * particlesPerAxis * particlesPerAxis;
+        Debug.Log($"rebuild fluid = {numParticles}");
+
+        CreateBuffers();
+        SpawnParticles();
+        CacheKernels();
+        SetupRenderArgs();
+
+        ready = true;
     }
 
     void OnDrawGizmos()

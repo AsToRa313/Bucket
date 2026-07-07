@@ -4,7 +4,7 @@ using Seb.Helpers;   // نظام Sebastian: SpatialHash
 
 /// <summary>
 /// مدير محاكاة سوائل على GPU بصيغة Clavet مع نظام ترتيب مكاني (Seb Lague).
-/// تم إصلاح مشكلة التجمد (Infinite Loop) بربط مصفوفات الترتيب بشكل آمن.
+/// تم تحديثه ليدعم ثقوب تفريغ بأشكال هندسية متعددة (دوائر ومستطيلات).
 /// </summary>
 public class SPHSimulation1 : MonoBehaviour
 {
@@ -48,19 +48,30 @@ public class SPHSimulation1 : MonoBehaviour
     public float dropletHeight = 1.5f;
     public float dropletApproachSpeed = 0.8f;
 
+    public enum HoleShape { Circle = 0, Rectangle = 1 }
+
     [System.Serializable]
     public struct DrainHole
     {
+        public HoleShape shape;
         public Vector3 localPosition;
-        public float radius;
+        [Tooltip("للدائرة: X هو نصف القطر. للمستطيل/المربع: X, Y, Z هي نصف الأبعاد (Half-Extents)")]
+        public Vector3 size;
+    }
+
+    private struct GPUHoleData
+    {
+        public Vector3 localPosition;
+        public int shapeType;
+        public Vector3 size;
+        public float padding;
     }
 
     [Header("Drain Holes")]
     public DrainHole[] holes = new DrainHole[]
     {
-        new DrainHole { localPosition = new Vector3(0f, -0.3f, 0f), radius = 0.05f },
-        new DrainHole { localPosition = new Vector3(0.25f, -0.1f, 0f), radius = 0.04f },
-        new DrainHole { localPosition = new Vector3(-0.25f, -0.1f, 0f), radius = 0.04f },
+        new DrainHole { shape = HoleShape.Circle, localPosition = new Vector3(0f, -0.3f, 0f), size = new Vector3(0.05f, 0f, 0f) },
+        new DrainHole { shape = HoleShape.Rectangle, localPosition = new Vector3(0.25f, -0.1f, 0f), size = new Vector3(0.04f, 0.02f, 0.04f) }
     };
 
     [Header("Vortex")]
@@ -92,13 +103,13 @@ public class SPHSimulation1 : MonoBehaviour
     [Tooltip("سقف حجم بركة الطلاء بالبكسل. أصغر = أسرع بكثير (8 موصى به، 20+ يعلّق)")]
     [Range(4, 24)]
     public int poolMaxRadius = 8;
-    [Tooltip("حد نمو البقعة: بعد هذا التراكم تتوقف البقعة عن الكبر (لكن تبقى تُرسم فوقها الألوان). أصغر = بقع أصغر وأسرع")]
+    [Tooltip("حد نمو البقعة: بعد هذا التراكم تتوقف البقعة عن الكبر. أصغر = بقع أصغر وأسرع")]
     [Range(10, 100)]
     public float poolSaturation = 40f;
     [Tooltip("أقصى عدد قطرات تُرسم بكل إطار. يمنع التعليق عند تدفق كثيف. أصغر = أأمن (150 موصى به)")]
     [Range(20, 2000)]
     public int maxSplatsPerFrame = 150;
-    [Tooltip("عمق تحت اللوحة تختفي عنده القطرة الحرة (تمنع السقوط اللانهائي الذي يعلّق النظام). متر")]
+    [Tooltip("عمق تحت اللوحة تختفي عنده القطرة الحرة. متر")]
     public float freeParticleKillDepth = 2f;
     public bool enableWetMix = true;
     [Range(0f, 1f)]
@@ -110,7 +121,7 @@ public class SPHSimulation1 : MonoBehaviour
     ComputeBuffer positionBuffer, prevPositionBuffer, velocityBuffer;
     ComputeBuffer stateBuffer, holeBuffer, colorBuffer;
     ComputeBuffer splatPointsBuffer, splatCountBuffer;
-    ComputeBuffer paintCounterBuffer;   // عدّاد حد الرسم/إطار
+    ComputeBuffer paintCounterBuffer;
 
     SpatialHash spatialHash;
 
@@ -147,7 +158,7 @@ public class SPHSimulation1 : MonoBehaviour
         CacheKernels();
 
         ready = true;
-        Debug.Log($"[SPH] جاهز وتم إصلاح الترتيب المكاني: {numParticles} جسيم عبر SpatialHash");
+        Debug.Log($"[SPH] جاهز مع نظام الأشكال المتعددة للثقوب: {numParticles} جسيم.");
     }
 
     void SetupCanvasTexture()
@@ -176,7 +187,7 @@ public class SPHSimulation1 : MonoBehaviour
         stateBuffer = new ComputeBuffer(numParticles, sizeof(uint));
 
         int holeCount = Mathf.Max(1, holes.Length);
-        holeBuffer = new ComputeBuffer(holeCount, sizeof(float) * 4);
+        holeBuffer = new ComputeBuffer(holeCount, sizeof(float) * 8); // 32 Bytes متوافقة مع محاذاة الذاكرة
         UploadHoles();
 
         spatialHash = new SpatialHash(numParticles);
@@ -195,11 +206,24 @@ public class SPHSimulation1 : MonoBehaviour
     void UploadHoles()
     {
         int n = Mathf.Max(1, holes.Length);
-        var data = new Vector4[n];
-        for (int i = 0; i < holes.Length; i++)
-            data[i] = new Vector4(holes[i].localPosition.x, holes[i].localPosition.y, holes[i].localPosition.z, holes[i].radius);
+        var data = new GPUHoleData[n];
 
-        if (holes.Length == 0) data[0] = new Vector4(0, -999f, 0, 0f);
+        for (int i = 0; i < holes.Length; i++)
+        {
+            data[i] = new GPUHoleData
+            {
+                localPosition = holes[i].localPosition,
+                shapeType = (int)holes[i].shape,
+                size = holes[i].size,
+                padding = 0f
+            };
+        }
+
+        if (holes.Length == 0)
+        {
+            data[0] = new GPUHoleData { localPosition = new Vector3(0, -999f, 0), shapeType = 0, size = Vector3.zero };
+        }
+
         holeBuffer.SetData(data);
     }
 
@@ -219,15 +243,10 @@ public class SPHSimulation1 : MonoBehaviour
         float bottomY = -bucketHeight * 0.5f;
         float fillRadius = bucketRadius * 0.9f;
 
-        // --- توزيع الجسيمات على كامل حجم السطل بالتساوي ---
-        // نملأ نسبة fill من ارتفاع السطل، ونحسب المسافة بين الجسيمات
-        // من العدد الفعلي (مش من smoothingRadius) - وإلا الجسيمات الزائدة تتكدّس.
         float fillHeight = bucketHeight * 0.95f * initialFillRatio;
         float fillVolume = Mathf.PI * fillRadius * fillRadius * fillHeight;
-        // المسافة بين الجسيمات = الجذر التكعيبي لـ (الحجم / العدد)
         float spacing = Mathf.Pow(fillVolume / Mathf.Max(1, numParticles), 1f / 3f);
-        spacing = Mathf.Max(spacing, 0.0005f); // حماية من القيم الصفرية
-        // ---------------------------------------------------
+        spacing = Mathf.Max(spacing, 0.0005f);
 
         const int MAX_AXIS = 150;
         int nx = Mathf.Clamp(Mathf.CeilToInt((fillRadius * 2f) / spacing), 1, MAX_AXIS);
@@ -310,6 +329,7 @@ public class SPHSimulation1 : MonoBehaviour
             restDensity = EstimateRestDensity(positions);
         }
     }
+
     void InitializeTwoDroplets()
     {
         Vector3 center = bucketTransform != null ? bucketTransform.position : Vector3.zero;
@@ -401,7 +421,6 @@ public class SPHSimulation1 : MonoBehaviour
             if (k == kUpdateHash || k == kRelax)
                 compute.SetBuffer(k, "SpatialKeys", spatialHash.SpatialKeys);
 
-            // تم إضافة SortedIndices لدالة الاسترخاء هنا لحل مشكلة التجميد
             if (k == kRelax)
             {
                 compute.SetBuffer(k, "SpatialOffsets", spatialHash.SpatialOffsets);
@@ -478,7 +497,6 @@ public class SPHSimulation1 : MonoBehaviour
         if (canvas != null && canvasRT != null)
         {
             UpdateCanvasConstants();
-            // صفّر عدّاد الرسم باستخدام المصفوفة المجهزة مسبقاً (يمنع التقطيع)
             paintCounterBuffer.SetData(zeroArr);
             compute.SetInt("maxSplatsPerFrame", maxSplatsPerFrame);
             compute.Dispatch(kPaintCanvas, pGroups, 1, 1);
@@ -617,12 +635,30 @@ public class SPHSimulation1 : MonoBehaviour
         {
             Transform t = bucketTransform != null ? bucketTransform : transform;
             Gizmos.color = Color.red;
+
+            // تخزين المصفوفة الافتراضية
+            Matrix4x4 oldMatrix = Gizmos.matrix;
+            // الانتقال إلى الفضاء المحلي التابع للسطل بحيث تدور الأشكال وترسم بدقة متناهية
+            Gizmos.matrix = t.localToWorldMatrix;
+
             foreach (var hole in holes)
             {
-                Vector3 worldPos = t.position + t.rotation * hole.localPosition;
-                Gizmos.DrawWireSphere(worldPos, hole.radius);
+                if (hole.shape == HoleShape.Circle)
+                {
+                    // يتم رسم الثقب الدائري بالاعتماد على size.x كنصف قطر
+                    Gizmos.DrawWireSphere(hole.localPosition, hole.size.x);
+                }
+                else if (hole.shape == HoleShape.Rectangle)
+                {
+                    // ضرب الأبعاد بـ 2 لأن الكود يعتمد على نصف الأبعاد (Half-extents)
+                    Gizmos.DrawWireCube(hole.localPosition, hole.size * 2f);
+                }
             }
+
+            // استعادة المصفوفة الافتراضية للـ Gizmos
+            Gizmos.matrix = oldMatrix;
         }
+
         if (canvas != null)
         {
             Gizmos.color = Color.yellow;

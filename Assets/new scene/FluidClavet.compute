@@ -14,6 +14,7 @@
 #pragma kernel Reorder
 #pragma kernel ReorderCopyBack
 #pragma kernel CalculateDensity
+#pragma kernel ApplyViscosity
 #pragma kernel DoubleDensityRelax
 #pragma kernel UpdatePositions
 
@@ -45,6 +46,8 @@ const float smoothingRadius;
 const float restDensity;
 const float stiffness;
 const float nearStiffness;
+const float viscosityStrength; // اللزوجة الخطية (sigma) - قوة تقارب السرعات
+const float viscosityBeta; // اللزوجة التربيعية (beta) - للسرعات العالية
 
 // حدود الصندوق (نمط Sebastian - مصفوفات تحويل)
 const float3 boundsSize;
@@ -235,6 +238,66 @@ void CalculateDensity(uint3 id : SV_DispatchThreadID)
     }
 
     Densities[id.x] = float2(density, nearDensity);
+}
+
+// ============================================================
+//  اللزوجة (Viscosity) - Clavet 2005
+//  تقارب سرعات الجيران المتقاربة => سائل كثيف (عسل/دهان)
+//  كل جسيم يعدّل سرعته هو فقط (متماثل، آمن من تضارب الكتابة)
+// ============================================================
+[numthreads(ThreadGroupSize, 1, 1)]
+void ApplyViscosity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles)
+        return;
+    if (viscosityStrength <= 0)
+        return;
+
+    float3 pos = PredictedPositions[id.x];
+    float3 vel = Velocities[id.x];
+    int3 originCell = GetCell3D(pos, smoothingRadius);
+    float sqrRadius = smoothingRadius * smoothingRadius;
+
+    float3 velChange = float3(0, 0, 0);
+
+    for (int i = 0; i < 27; i++)
+    {
+        uint hash = HashCell3D(originCell + offsets3D[i]);
+        uint key = KeyFromHash(hash, numParticles);
+        uint currIndex = SpatialOffsets[key];
+
+        while (currIndex < numParticles)
+        {
+            uint j = currIndex;
+            currIndex++;
+            if (SpatialKeys[j] != key)
+                break;
+            if (j == id.x)
+                continue;
+
+            float3 offset = PredictedPositions[j] - pos;
+            float sqrDst = dot(offset, offset);
+            if (sqrDst > sqrRadius || sqrDst < 0.000001)
+                continue;
+
+            float dst = sqrt(sqrDst);
+            float q = 1.0 - dst / smoothingRadius;
+            float3 dir = offset / dst;
+
+            // السرعة النسبية على طول الخط الواصل بين الجسيمين
+            float u = dot(vel - Velocities[j], dir);
+            if (u > 0)   // يتقاربان فقط
+            {
+                // دفعة لزجة: خطية (sigma) + تربيعية (beta)
+                float impulse = q * (viscosityStrength * u + viscosityBeta * u * u) * deltaTime;
+                // حماية استقرار: لا تتجاوز الدفعة السرعة النسبية نفسها (تمنع الانعكاس/الانفجار)
+                impulse = min(impulse, u);
+                velChange -= dir * impulse * 0.5;
+            }
+        }
+    }
+
+    Velocities[id.x] = vel + velChange;
 }
 
 // ============================================================

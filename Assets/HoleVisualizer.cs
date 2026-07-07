@@ -35,10 +35,11 @@ public class HoleVisualizer : MonoBehaviour
         for (int i = 0; i < holes.Length; i++)
         {
             var go = new GameObject($"HoleRing_{i}");
-           
+
             var lr = go.AddComponent<LineRenderer>();
-            lr.useWorldSpace = true;      
+            lr.useWorldSpace = true;
             lr.loop = true;
+            // سيتم تحديث عدد النقاط لاحقاً بناءً على شكل الثقب (دائرة أو مستطيل)
             lr.positionCount = segments;
             lr.startWidth = lineWidth;
             lr.endWidth = lineWidth;
@@ -53,7 +54,6 @@ public class HoleVisualizer : MonoBehaviour
         UpdateRings();
     }
 
-   
     void UpdateRings()
     {
         var holes = simulation.holes;
@@ -69,32 +69,57 @@ public class HoleVisualizer : MonoBehaviour
         for (int i = 0; i < rings.Count && i < holes.Length; i++)
         {
             if (rings[i] == null) continue;
-            DrawRingWorld(rings[i], center, rot, holes[i].localPosition, holes[i].radius);
+            // إرسال الثقب بالكامل للدالة الجديدة التي تتعامل مع الأشكال
+            DrawHoleWorld(rings[i], center, rot, holes[i]);
         }
     }
 
-    void DrawRingWorld(LineRenderer lr, Vector3 center, Quaternion rot,
-                       Vector3 localCenter, float radius)
+    void DrawHoleWorld(LineRenderer lr, Vector3 center, Quaternion rot, SPHSimulation1.DrainHole hole)
     {
-        // النورمال = اتجاه الثقب من المركز
-        Vector3 normal = localCenter.normalized;
-        if (normal.sqrMagnitude < 0.0001f)
-            normal = Vector3.up;
+        Vector3 localCenter = hole.localPosition;
 
-        Vector3 tangent = Vector3.Cross(normal, Vector3.up);
-        if (tangent.sqrMagnitude < 0.0001f)
-            tangent = Vector3.Cross(normal, Vector3.right);
-        tangent.Normalize();
-        Vector3 bitangent = Vector3.Cross(normal, tangent);
-
-        for (int s = 0; s < segments; s++)
+        if (hole.shape == SPHSimulation1.HoleShape.Circle)
         {
-            float a = (s / (float)segments) * Mathf.PI * 2f;
-            Vector3 localOffset = (Mathf.Cos(a) * tangent + Mathf.Sin(a) * bitangent) * radius;
-            Vector3 localPoint = localCenter + localOffset;
-            // تحويل لعالمي: مركز + دوران*محلي (بدون scale، مطابق للفيزياء)
-            Vector3 worldPoint = center + rot * localPoint;
-            lr.SetPosition(s, worldPoint);
+            lr.positionCount = segments;
+            float radius = hole.size.x; // تم استبدال radius بـ size.x ليتوافق مع التعديل الجديد
+
+            // النورمال = اتجاه الثقب من المركز
+            Vector3 normal = localCenter.normalized;
+            if (normal.sqrMagnitude < 0.0001f)
+                normal = Vector3.up;
+
+            Vector3 tangent = Vector3.Cross(normal, Vector3.up);
+            if (tangent.sqrMagnitude < 0.0001f)
+                tangent = Vector3.Cross(normal, Vector3.right);
+            tangent.Normalize();
+            Vector3 bitangent = Vector3.Cross(normal, tangent).normalized;
+
+            for (int s = 0; s < segments; s++)
+            {
+                float a = (s / (float)segments) * Mathf.PI * 2f;
+                Vector3 localOffset = (Mathf.Cos(a) * tangent + Mathf.Sin(a) * bitangent) * radius;
+                Vector3 localPoint = localCenter + localOffset;
+                // تحويل لعالمي: مركز + دوران*محلي (بدون scale، مطابق للفيزياء)
+                Vector3 worldPoint = center + rot * localPoint;
+                lr.SetPosition(s, worldPoint);
+            }
+        }
+        else if (hole.shape == SPHSimulation1.HoleShape.Rectangle)
+        {
+            // المستطيل يحتاج 4 نقاط فقط (ولأننا فعلنا lr.loop = true سيتم إغلاق المربع تلقائياً)
+            lr.positionCount = 4;
+
+            // حساب الزوايا الأربع بناءً على الأبعاد (Half-extents) للمستطيل في الفضاء المحلي للسطل
+            Vector3 c1 = localCenter + new Vector3(hole.size.x, 0, hole.size.z);
+            Vector3 c2 = localCenter + new Vector3(hole.size.x, 0, -hole.size.z);
+            Vector3 c3 = localCenter + new Vector3(-hole.size.x, 0, -hole.size.z);
+            Vector3 c4 = localCenter + new Vector3(-hole.size.x, 0, hole.size.z);
+
+            // تحويل الزوايا من فضاء السطل المحلي إلى فضاء العالم
+            lr.SetPosition(0, center + rot * c1);
+            lr.SetPosition(1, center + rot * c2);
+            lr.SetPosition(2, center + rot * c3);
+            lr.SetPosition(3, center + rot * c4);
         }
     }
 

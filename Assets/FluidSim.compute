@@ -1,6 +1,6 @@
 // ============================================================
 //  FluidSim.compute  —  مع نظام SpatialHash
-//  تم إصلاح خطأ الـ Infinite Loop الذي كان يعلق الكرت بالكامل
+//  تم التحديث لدعم الثقوب المتعددة الأشكال (دائرة ومستطيل)
 // ============================================================
 
 #pragma kernel ApplyGravity
@@ -31,7 +31,16 @@ RWStructuredBuffer<uint> SortedStates;
 RWStructuredBuffer<float4> ParticleColorsSorted;
 RWStructuredBuffer<float4> ParticleColorsIn;
 
-StructuredBuffer<float4> Holes;
+// --- الهيكل الجديد المطابق للـ C# ---
+struct DrainHoleData
+{
+    float3 localPosition;
+    int shapeType; // 0 = Circle, 1 = Rectangle
+    float3 size; // Circle: x = radius. Rectangle: xyz = half extents
+    float padding;
+};
+
+StructuredBuffer<DrainHoleData> Holes;
 const uint numHoles;
 const float vortexRange, vortexPull, vortexSpin;
 
@@ -40,7 +49,7 @@ const float3 canvasCenter;
 const float2 canvasHalfSize;
 const uint canvasEnabled;
 AppendStructuredBuffer<float3> SplatPoints;
-RWStructuredBuffer<uint> PaintCounter; // عدّاد ذرّي: يحدّ القطرات المرسومة/إطار
+RWStructuredBuffer<uint> PaintCounter;
 RWTexture2D<float4> CanvasTex;
 RWStructuredBuffer<float> CanvasAccum;
 RWStructuredBuffer<float4> ParticleColors;
@@ -49,10 +58,10 @@ const float4 paintColorGPU;
 const float splatRadiusPixels, paintOpacityGPU;
 const uint canvasFlipU, canvasFlipV, canvasPooling;
 const float poolGrowth;
-const int poolMaxRadius; // سقف نصف قطر البركة بالبكسل (يمنع التعليق)
-const float poolSaturation; // حد تشبّع البقعة (بعده تتوقف عن الرسم)
-const uint maxSplatsPerFrame; // أقصى عدد قطرات تُرسم بكل إطار (يمنع تضارب الكتابة = التعليق)
-const float freeParticleKillDepth; // عمق تحت الكانفاس تُستهلك عنده القطرة الحرة (يمنع السقوط اللانهائي)
+const int poolMaxRadius;
+const float poolSaturation;
+const uint maxSplatsPerFrame;
+const float freeParticleKillDepth;
 const uint canvasWetMix;
 const float wetMixStrength;
 
@@ -189,7 +198,6 @@ void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
     float nearDensity = 0;
 
     // --- تمريرة 1: الكثافة ---
-   // --- تمريرة 1: الكثافة ---
     for (int ox = -1; ox <= 1; ox++)
         for (int oy = -1; oy <= 1; oy++)
             for (int oz = -1; oz <= 1; oz++)
@@ -210,7 +218,6 @@ void DoubleDensityRelax(uint3 id : SV_DispatchThreadID)
                     if (j == id.x || States[j] != 0)
                         continue;
 
-        
                     if (neighborCount++ > 64)
                         break;
 
@@ -315,11 +322,10 @@ void ComputeVelocity(uint3 id : SV_DispatchThreadID)
                 Positions[id.x] = splatPos;
                 Velocities[id.x] = float3(0, 0, 0);
                 States[id.x] = 3;
-              
+                
             }
         }
-        // أرضية للقطرات الحرة: لو سقطت أبعد من الكانفاس (أو ما في كانفاس)،
-        // نستهلكها بدل السقوط اللانهائي. حرج: السقوط بلا حد يمدّد الشبكة المكانية = تعليق تدريجي.
+        
         float killLevel = (canvasEnabled == 1) ? (canvasY - freeParticleKillDepth)
                                                : (bucketCenter.y - bucketHeight * 0.5 - freeParticleKillDepth);
         if (States[id.x] == 1 && newPos.y < killLevel)
@@ -387,14 +393,30 @@ void CheckHoles(uint3 id : SV_DispatchThreadID)
         return;
     }
 
+    // --- نظام فحص الأشكال الجديد ---
     for (uint hi = 0; hi < numHoles; hi++)
     {
-        float4 hole = Holes[hi];
-        float d = length(local - hole.xyz);
-        if (d < hole.w)
+        DrainHoleData hole = Holes[hi];
+        float3 delta = local - hole.localPosition;
+        bool isInside = false;
+
+        if (hole.shapeType == 0)
+        {
+            // دائرة: نعتمد على Size.x كنصف قطر
+            isInside = length(delta) < hole.size.x;
+        }
+        else if (hole.shapeType == 1)
+        {
+            // مستطيل: نعتمد على Size (x,y,z) كنصف أبعاد (Half-extents)
+            isInside = (abs(delta.x) < hole.size.x) &&
+                       (abs(delta.y) < hole.size.y) &&
+                       (abs(delta.z) < hole.size.z);
+        }
+
+        if (isInside)
         {
             States[id.x] = 1;
-            Velocities[id.x] = float3(0, -0.5, 0);
+            Velocities[id.x] = float3(0, -0.5, 0); // دفشة صغيرة للأسفل
             return;
         }
     }
@@ -416,16 +438,21 @@ void ApplyVortex(uint3 id : SV_DispatchThreadID)
 
     for (uint hi = 0; hi < numHoles; hi++)
     {
-        float4 hole = Holes[hi];
-        float range = hole.w * vortexRange;
-        float3 toHole = hole.xyz - local;
+        DrainHoleData hole = Holes[hi];
+        
+        // حساب القاعدة الأساسية لمدى الدوامة حسب الشكل
+        float baseSize = (hole.shapeType == 0) ? hole.size.x : max(hole.size.x, hole.size.z);
+        float range = baseSize * vortexRange;
+        
+        float3 toHole = hole.localPosition - local;
         float dist = length(toHole);
 
         if (dist < range && dist > 0.0001)
         {
-            float3 axis = normalize(hole.xyz);
-            if (length(hole.xyz) < 0.0001)
+            float3 axis = normalize(hole.localPosition);
+            if (length(hole.localPosition) < 0.0001)
                 axis = float3(0, 1, 0);
+                
             float3 radialDir = toHole / dist;
             
             float strength = 1.0 - (dist / range);

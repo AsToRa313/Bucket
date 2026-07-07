@@ -2,13 +2,7 @@ using UnityEngine;
 using UnityEngine.UI;
 
 /// <summary>
-/// واجهة تحكم بالسائل: أزرار (دفع/جذب/Reset) + منزلقات (قوة/نصف قطر/جاذبية).
-/// تبني كل عناصر UI تلقائياً بالكود - فقط اربط FluidClavetSim وشغّل.
-///
-/// الإعداد:
-/// 1. اعمل Canvas (GameObject > UI > Canvas) - أو سيُنشأ تلقائياً.
-/// 2. أضف هذا السكربت لأي GameObject.
-/// 3. اربط حقل Sim بكائن FluidClavetSim.
+/// واجهة تحكم بالسائل: أزرار (دفع/جذب/Reset) + منزلقات (قوة/نصف قطر/جاذبية/نوع السائل/العدد).
 /// </summary>
 public class FluidUI : MonoBehaviour
 {
@@ -23,8 +17,16 @@ public class FluidUI : MonoBehaviour
     public float minGravity = 0f;
     public float maxGravity = 20f;
 
+    // قيم للتحكم بعدد الجزيئات
+    public int minParticlesPerAxis = 10;
+    public int maxParticlesPerAxis = 60;
+
     Text modeLabel;
     Canvas canvas;
+
+    // متغيرات لحفظ الحالة المؤقتة
+    int pendingParticles;
+    string[] fluidNames;
 
     void Start()
     {
@@ -33,12 +35,15 @@ public class FluidUI : MonoBehaviour
             sim = FindObjectOfType<FluidClavetSim>();
             if (sim == null) { Debug.LogError("[FluidUI] لم يُربط FluidClavetSim!"); return; }
         }
+
+        pendingParticles = sim.particlesPerAxis;
+        fluidNames = System.Enum.GetNames(typeof(FluidClavetSim.FluidType));
+
         BuildUI();
     }
 
     void BuildUI()
     {
-        // Canvas
         canvas = FindObjectOfType<Canvas>();
         if (canvas == null)
         {
@@ -48,7 +53,7 @@ public class FluidUI : MonoBehaviour
             canvasGO.AddComponent<CanvasScaler>();
             canvasGO.AddComponent<GraphicRaycaster>();
         }
-        // نتأكد من وجود EventSystem (ضروري لتفاعل UI)
+
         if (FindObjectOfType<UnityEngine.EventSystems.EventSystem>() == null)
         {
             var es = new GameObject("EventSystem");
@@ -56,57 +61,72 @@ public class FluidUI : MonoBehaviour
             es.AddComponent<UnityEngine.EventSystems.StandaloneInputModule>();
         }
 
-        // لوحة خلفية (يسار الشاشة)
-        var panel = CreatePanel(canvas.transform, new Vector2(20, -20), new Vector2(240, 360));
+        // كبرنا اللوحة لتتسع للخيارات الجديدة
+        var panel = CreatePanel(canvas.transform, new Vector2(20, -20), new Vector2(240, 540));
 
         float y = -20f;
-        float step = 0f;
 
-        // عنوان
         CreateLabel(panel, "fluid control", new Vector2(0, y), 20, TextAnchor.MiddleCenter, 240);
         y -= 40f;
 
-        // زر دفع
         CreateButton(panel, "Push", new Vector2(20, y), new Vector2(200, 36),
             new Color(0.85f, 0.3f, 0.3f), () => { sim.SetPushMode(); SetMode("الوضع: دفع"); });
         y -= 44f;
 
-        // زر جذب
         CreateButton(panel, "Pull", new Vector2(20, y), new Vector2(200, 36),
             new Color(0.3f, 0.7f, 0.4f), () => { sim.SetPullMode(); SetMode("الوضع: جذب"); });
         y -= 44f;
 
-        // زر Reset
-        CreateButton(panel, "Reset", new Vector2(20, y), new Vector2(200, 36),
-            new Color(0.35f, 0.45f, 0.85f), () => sim.ResetFluid());
+        // زر الـ Reset تم ربطه بالدالة الجديدة ليطبق العدد المعلق
+        CreateButton(panel, "Reset & Apply Size", new Vector2(20, y), new Vector2(200, 36),
+            new Color(0.35f, 0.45f, 0.85f), () => {
+                sim.particlesPerAxis = pendingParticles;
+                sim.FullReset();
+            });
         y -= 50f;
 
-        // منزلق القوة
+        // --- منزلق نوع السائل ---
+        var fluidLabel = CreateLabel(panel, $"Fluid: {fluidNames[(int)sim.fluidType]}", new Vector2(20, y), 14, TextAnchor.MiddleLeft, 200);
+        y -= 24f;
+        var typeSlider = CreateSlider(panel, new Vector2(20, y), 200, 0f, fluidNames.Length - 1, (int)sim.fluidType,
+            v => {
+                int idx = Mathf.RoundToInt(v);
+                sim.SetFluidType(idx);
+                fluidLabel.text = $"Fluid: {fluidNames[idx]}";
+            });
+        typeSlider.wholeNumbers = true;
+        y -= 40f;
+
+        // --- منزلق عدد الجزيئات (يتغير فقط كمتغير، ويُطبق عند الـ Reset) ---
+        var particleLabel = CreateLabel(panel, $"Particles: {pendingParticles}³ (Delay)", new Vector2(20, y), 14, TextAnchor.MiddleLeft, 200);
+        y -= 24f;
+        var partSlider = CreateSlider(panel, new Vector2(20, y), 200, minParticlesPerAxis, maxParticlesPerAxis, pendingParticles,
+            v => {
+                pendingParticles = Mathf.RoundToInt(v);
+                particleLabel.text = $"Particles: {pendingParticles}³ (Delay)";
+            });
+        partSlider.wholeNumbers = true;
+        y -= 40f;
+
         CreateLabel(panel, "click power", new Vector2(20, y), 14, TextAnchor.MiddleLeft, 200);
         y -= 24f;
         CreateSlider(panel, new Vector2(20, y), 200, minStrength, maxStrength, sim.mouseStrength,
             v => sim.SetMouseStrength(v));
         y -= 40f;
 
-        // منزلق نصف القطر
-        CreateLabel(panel, "raduis fpr click", new Vector2(20, y), 14, TextAnchor.MiddleLeft, 200);
+        CreateLabel(panel, "radius for click", new Vector2(20, y), 14, TextAnchor.MiddleLeft, 200);
         y -= 24f;
         CreateSlider(panel, new Vector2(20, y), 200, minRadius, maxRadius, sim.mouseRadius,
             v => sim.SetMouseRadius(v));
         y -= 40f;
 
-        // منزلق الجاذبية
         CreateLabel(panel, "gravity", new Vector2(20, y), 14, TextAnchor.MiddleLeft, 200);
         y -= 24f;
         CreateSlider(panel, new Vector2(20, y), 200, minGravity, maxGravity, sim.gravity,
             v => sim.SetGravity(v));
-        y -= 40f;
-
     }
 
     void SetMode(string txt) { if (modeLabel != null) modeLabel.text = txt; }
-
-    // ---------- دوال بناء عناصر UI ----------
 
     RectTransform CreatePanel(Transform parent, Vector2 pos, Vector2 size)
     {
@@ -122,8 +142,7 @@ public class FluidUI : MonoBehaviour
         return rt;
     }
 
-    Button CreateButton(Transform parent, string label, Vector2 pos, Vector2 size,
-                        Color color, UnityEngine.Events.UnityAction onClick)
+    Button CreateButton(Transform parent, string label, Vector2 pos, Vector2 size, Color color, UnityEngine.Events.UnityAction onClick)
     {
         var go = new GameObject("Button", typeof(Image), typeof(Button));
         go.transform.SetParent(parent, false);
@@ -142,8 +161,7 @@ public class FluidUI : MonoBehaviour
         return btn;
     }
 
-    Text CreateLabel(Transform parent, string text, Vector2 pos, int fontSize,
-                    TextAnchor anchor, float width, float height = 30f)
+    Text CreateLabel(Transform parent, string text, Vector2 pos, int fontSize, TextAnchor anchor, float width, float height = 30f)
     {
         var go = new GameObject("Label", typeof(Text));
         go.transform.SetParent(parent, false);
@@ -162,8 +180,7 @@ public class FluidUI : MonoBehaviour
         return t;
     }
 
-    Slider CreateSlider(Transform parent, Vector2 pos, float width,
-                       float min, float max, float value, UnityEngine.Events.UnityAction<float> onChange)
+    Slider CreateSlider(Transform parent, Vector2 pos, float width, float min, float max, float value, UnityEngine.Events.UnityAction<float> onChange)
     {
         var go = new GameObject("Slider", typeof(Slider));
         go.transform.SetParent(parent, false);
@@ -173,7 +190,6 @@ public class FluidUI : MonoBehaviour
         rt.anchoredPosition = pos;
         rt.sizeDelta = new Vector2(width, 20);
 
-        // خلفية
         var bg = new GameObject("Background", typeof(Image));
         bg.transform.SetParent(go.transform, false);
         bg.GetComponent<Image>().color = new Color(0.25f, 0.25f, 0.3f);
@@ -181,7 +197,6 @@ public class FluidUI : MonoBehaviour
         bgRt.anchorMin = Vector2.zero; bgRt.anchorMax = Vector2.one;
         bgRt.sizeDelta = Vector2.zero;
 
-        // منطقة التعبئة
         var fillArea = new GameObject("Fill Area", typeof(RectTransform));
         fillArea.transform.SetParent(go.transform, false);
         var faRt = fillArea.GetComponent<RectTransform>();
@@ -195,7 +210,6 @@ public class FluidUI : MonoBehaviour
         fillRt.anchorMin = Vector2.zero; fillRt.anchorMax = new Vector2(0, 1);
         fillRt.sizeDelta = new Vector2(10, 0);
 
-        // المقبض
         var handleArea = new GameObject("Handle Slide Area", typeof(RectTransform));
         handleArea.transform.SetParent(go.transform, false);
         var haRt = handleArea.GetComponent<RectTransform>();
