@@ -543,14 +543,14 @@ MonoBehaviour:
   airDamping: 0.001
   pivotFriction: 0.05
   shape: 0
-  bucketHeight: 0.6
+  bucketHeight: 2
   emptyBucketMass: 0.5
   maxPaintMass: 2
   currentPaintMass: 2
   drainRate: 0.05
   torsionalStiffness: 0.8
   torsionalDamping: 0.05
-  bucketRadius: 0.2
+  bucketRadius: 1.5
   ropeSegments: 15
   sagFactor: 0.6
 --- !u!114 &811034508
@@ -567,22 +567,22 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::SPHSimulation1
   compute: {fileID: 7200000, guid: b3ba207ba05499b46896ceeec3d1f8fc, type: 3}
   numParticles: 100000
-  iterations: 4
-  smoothingRadius: 0.015
+  iterations: 1
+  smoothingRadius: 0.04
   autoRestDensity: 1
-  restDensity: 10
-  stiffness: 0.05
-  nearStiffness: 0.05
-  velocityDamping: 0.995
+  restDensity: 20
+  stiffness: 50
+  nearStiffness: 75
+  velocityDamping: 0.98
   gravity: 9.81
-  maxInertiaAccel: 5
+  maxInertiaAccel: 0.5
   collisionDamping: 0.4
   wallRestitution: 0.1
   pendulum: {fileID: 811034506}
   bucketTransform: {fileID: 811034500}
   bucketRadius: 0.25
   bucketHeight: 0.6
-  initialFillRatio: 0.8
+  initialFillRatio: 1
   twoDropletsMode: 0
   dropletColor1: {r: 0.8211382, g: 0.14901961, b: 0.9019608, a: 1}
   dropletColor2: {r: 0.14901961, g: 0.9273022, b: 0.9490196, a: 1}
@@ -592,7 +592,7 @@ MonoBehaviour:
   dropletApproachSpeed: 0
   holes:
   - localPosition: {x: 0, y: -0.3, z: 0}
-    radius: 0.01
+    radius: 0.05
   enableVortex: 0
   vortexRange: 6
   vortexPull: 1
@@ -604,7 +604,7 @@ MonoBehaviour:
   canvasSurfaceOffset: 0.02
   canvasY: -1.5
   canvasHalfSize: {x: 1, y: 1}
-  paintColor: {r: 0.77254903, g: 0.11372547, b: 0.5382254, a: 1}
+  paintColor: {r: 0.8196079, g: 0.14901961, b: 0.90196085, a: 1}
   canvasSplatRadius: 0.03
   canvasPaintOpacity: 0.6
   canvasFlipU: 1
@@ -614,7 +614,6 @@ MonoBehaviour:
   enableWetMix: 1
   wetMixStrength: 0.5
   canvasCheckInterval: 2
-  debugCanvas: 0
 --- !u!114 &811034510
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -812,7 +811,7 @@ MonoBehaviour:
   splashRadius: 0.05
   paintOpacity: 0.85
   velocityStretch: 6
-  autoSize: 1
+  autoSize: 0
   canvasHalfSize: {x: 1, y: 1}
   dryTime: 5
   wetBuildup: 0.25
