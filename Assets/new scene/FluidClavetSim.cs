@@ -1,16 +1,7 @@
 using UnityEngine;
-using Seb.Helpers;   // نظام Sebastian: SpatialHash, ComputeHelper
+using Seb.Helpers;   
 
-/// <summary>
-/// محاكاة سائل Clavet سريعة تصل لعشرات-مئات الآلاف من الجسيمات.
-/// تستخدم محرّك الترتيب المكاني المحسّن من Sebastian Lague (SpatialHash + GPU CountSort)
-/// مع خوارزمية Clavet (Double Density Relaxation).
-///
-/// المرحلة 1: سائل معزول في صندوق (بدون ثقوب/رسم) لاختبار الأداء.
-///
-/// المتطلّبات: مجلد Seb (ComputeHelper, SpatialHash, GPUCountSort, Scan,
-/// وملفات الـ compute: CountSort, ScanTest, SpatialOffsets) يجب أن يكون في المشروع.
-/// </summary>
+
 public class FluidClavetSim : MonoBehaviour
 {
     [Header("Compute Shader")]
@@ -87,7 +78,7 @@ public class FluidClavetSim : MonoBehaviour
     ComputeBuffer sortTargetPredictedBuffer;
     ComputeBuffer sortTargetVelocityBuffer;
 
-    // نظام الترتيب المكاني تبع Sebastian
+  
     SpatialHash spatialHash;
 
     // عرض
@@ -133,7 +124,7 @@ public class FluidClavetSim : MonoBehaviour
 
     // ================= واجهة التحكم العامة (للـ UI) =================
 
-    /// <summary>إعادة تشغيل السائل: يعيد الجسيمات لمواقعها الابتدائية</summary>
+    
     public void ResetFluid()
     {
         if (!ready) return;
@@ -141,12 +132,10 @@ public class FluidClavetSim : MonoBehaviour
         Debug.Log("[FluidClavet] تمت إعادة تشغيل السائل");
     }
 
-    /// <summary>وضع الماوس: 1 = دفع، -1 = جذب (يُربط بأزرار UI)</summary>
+
     public void SetPushMode() { mouseSign = 1f; enableMouse = true; }
     public void SetPullMode() { mouseSign = -1f; enableMouse = true; }
     public void ToggleMouse(bool on) { enableMouse = on; }
-
-    /// <summary>ضبط القوة ونصف القطر من المنزلقات</summary>
     public void SetMouseStrength(float v) { mouseStrength = v; }
     public void SetMouseRadius(float v) { mouseRadius = v; }
     public void SetGravity(float v) { gravity = v; }
@@ -329,7 +318,6 @@ public class FluidClavetSim : MonoBehaviour
         argsBuffer.SetData(args);
         renderBounds = new Bounds(transform.position, boundsSize * 2f);
 
-        // اربط الـ buffers بالماتيريال مرة واحدة (تبقى مربوطة - طريقة Sebastian)
         if (particleMaterial != null)
         {
             particleMaterial.SetBuffer("_PositionBuffer", positionBuffer);
@@ -391,7 +379,7 @@ public class FluidClavetSim : MonoBehaviour
         compute.SetFloat("viscosityBeta", viscosityBeta);
         compute.SetVector("boundsSize", boundsSize);
 
-        // مصفوفات التحويل للصندوق (نمط Sebastian)
+      
         Matrix4x4 localToWorld = Matrix4x4.TRS(transform.position, transform.rotation, boundsSize);
         compute.SetMatrix("localToWorld", localToWorld);
         compute.SetMatrix("worldToLocal", localToWorld.inverse);
@@ -464,7 +452,6 @@ public class FluidClavetSim : MonoBehaviour
         Graphics.DrawMeshInstancedIndirect(particleMesh, 0, particleMaterial, renderBounds, argsBuffer);
     }
 
-    /// <summary>إعادة بناء السائل بالكامل (لتغيير عدد الجزيئات بأمان)</summary>
     public void FullReset()
     {
         if (!ready) return;

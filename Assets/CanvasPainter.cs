@@ -1,9 +1,4 @@
 using UnityEngine;
-
-/// <summary>
-/// يستقبل قطرات SPH ويرسمها على تكستشر اللوحة
-/// اربطه مع PaintSPH ليشتغلا مع بعض
-/// </summary>
 [RequireComponent(typeof(Renderer))]
 public class CanvasPainter : MonoBehaviour
 {
@@ -57,9 +52,7 @@ public class CanvasPainter : MonoBehaviour
     [Header("References")]
     public SPHSimulation1 sphSystem;
 
-    // ============================================================
-    //  داخلية
-    // ============================================================
+
     private Texture2D canvasTexture;
     private Color[] pixels;
     private float[] wetness;        // رطوبة كل بكسل (0=ناشف، 1=رطب طازج)
@@ -68,10 +61,7 @@ public class CanvasPainter : MonoBehaviour
     private bool texturesDirty = false;
     private bool useGPUTexture = false;   // لو مفعّل، الرسم يتم على GPU (لا CPU)
 
-    /// <summary>
-    /// يستقبل تكستشر RenderTexture من GPU ويعرضه على اللوحة.
-    /// عند استخدامه، يتوقف نظام الرسم على CPU (الرسم يصير على GPU مباشرة).
-    /// </summary>
+
     public void SetGPUTexture(RenderTexture rt)
     {
         useGPUTexture = true;
@@ -91,15 +81,14 @@ public class CanvasPainter : MonoBehaviour
             Vector3 sc = transform.lossyScale;
             canvasHalfSize = new Vector2(5f * sc.x, 5f * sc.z);
         }
-        // ملاحظة: لو المدير فعّل وضع GPU عبر SetGPUTexture، نظام CPU يبقى خامل
-        // نهيّئ تكستشر CPU احتياطياً (يُستبدل لو GPU فُعّل)
+        
         if (!useGPUTexture)
             InitCanvas();
     }
 
     void Update()
     {
-        // لو الرسم على GPU، لا حاجة لأي معالجة CPU
+   
         if (useGPUTexture) return;
 
         CheckDroplets();
@@ -234,13 +223,7 @@ public class CanvasPainter : MonoBehaviour
         // الرسم بيصير من PaintSPH مباشرة عبر Splat()
     }
 
-    // ============================================================
-    //  API عام: يُستدعى من PaintSPH أو أي سكريبت آخر
-    // ============================================================
-
-    /// <summary>
-    /// ارسم بقعة طلاء على اللوحة بناءً على موقع العالم وسرعة القطرة
-    /// </summary>
+ 
     public void Splat(Vector3 worldPos, Vector3 velocity, Color color)
     {
         // حوّل الموقع إلى UV
@@ -342,7 +325,7 @@ public class CanvasPainter : MonoBehaviour
         texturesDirty = true;
     }
 
-    /// <summary>مسح اللوحة والبدء من جديد</summary>
+   
     public void ClearCanvas()
     {
         for (int i = 0; i < pixels.Length; i++)
@@ -355,7 +338,7 @@ public class CanvasPainter : MonoBehaviour
         paintedIds.Clear();
     }
 
-    /// <summary>حفظ صورة اللوحة كـ PNG</summary>
+    
     public void SaveCanvas(string path = "Assets/PaintResult.png")
     {
         byte[] bytes = canvasTexture.EncodeToPNG();
@@ -363,9 +346,7 @@ public class CanvasPainter : MonoBehaviour
         Debug.Log($"[CanvasPainter] تم حفظ اللوحة في: {path}");
     }
 
-    // ============================================================
-    //  مساعدات
-    // ============================================================
+ 
     Vector2 WorldToUV(Vector3 worldPos)
     {
         // إحداثيات نسبية لمركز اللوحة بالعالم (بدون تأثير scale)

@@ -13,7 +13,7 @@ Shader "Custom/SPHParticle"
             #pragma vertex vert
             #pragma fragment frag
             #pragma target 4.5
-            #pragma multi_compile_instancing // ضروري جداً لـ DrawMeshInstancedIndirect
+            #pragma multi_compile_instancing 
 
             #include "UnityCG.cginc"
 

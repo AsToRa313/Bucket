@@ -1,14 +1,4 @@
-// ============================================================
-//  FluidClavet.compute
-//  خوارزمية Clavet (Double Density Relaxation) على بنية
-//  Spatial Hash المحسّنة (نمط Sebastian Lague) للأداء العالي.
-//  يصل لعشرات-مئات الآلاف من الجسيمات.
-//
-//  الفرق عن نظامنا القديم:
-//  - يستخدم SpatialOffsets + SpatialKeys (بحث أسرع)
-//  - الترتيب عبر GPU CountSort متوازي (بدل PrefixSum بخيط واحد)
-//  - إعادة ترتيب الجسيمات بالذاكرة (Reorder) لوصول أسرع للكرت
-// ============================================================
+
 #pragma kernel ExternalForces
 #pragma kernel UpdateSpatialHash
 #pragma kernel Reorder
@@ -18,7 +8,7 @@
 #pragma kernel DoubleDensityRelax
 #pragma kernel UpdatePositions
 
-// نفس دوال الـ hashing تبع Sebastian (مجرّبة وسريعة)
+
 #include "./SpatialHash3D.hlsl"
 
 static const int ThreadGroupSize = 256;
@@ -49,7 +39,7 @@ const float nearStiffness;
 const float viscosityStrength; // اللزوجة الخطية (sigma) - قوة تقارب السرعات
 const float viscosityBeta; // اللزوجة التربيعية (beta) - للسرعات العالية
 
-// حدود الصندوق (نمط Sebastian - مصفوفات تحويل)
+
 const float3 boundsSize;
 const float4x4 localToWorld;
 const float4x4 worldToLocal;
@@ -89,7 +79,7 @@ float ClavetNearDensityKernel(float dst, float radius)
     return 0;
 }
 
-// حل التصادم مع الصندوق (نمط Sebastian - أنيق ويدعم صندوق مدوّر)
+
 void ResolveCollisions(inout float3 pos, inout float3 vel, float damping)
 {
     float3 posLocal = mul(worldToLocal, float4(pos, 1)).xyz;

@@ -248,16 +248,19 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::FluidClavetSim
   compute: {fileID: 7200000, guid: 795adb6fe15c8e843911b7f95dbd9ee6, type: 3}
-  particlesPerAxis: 55
-  iterations: 4
+  particlesPerAxis: 38
+  iterations: 2
+  fluidType: 1
   smoothingRadius: 0.09
   restDensity: 10
   autoRestDensity: 1
-  stiffness: 1
-  nearStiffness: 1
+  stiffness: 0.6
+  nearStiffness: 0.5
+  viscosityStrength: 0
+  viscosityBeta: 0
   gravity: 9.81
   collisionDamping: 0.4
-  velocityDamping: 0.98
+  velocityDamping: 0.995
   boundsSize: {x: 4, y: 4, z: 4}
   spawnSize: {x: 2.5, y: 2, z: 2.5}
   spawnCentre: {x: 1, y: 1, z: 0}
@@ -269,7 +272,7 @@ MonoBehaviour:
   particleMesh: {fileID: 10207, guid: 0000000000000000e000000000000000, type: 0}
   particleMaterial: {fileID: 2100000, guid: 421f2f7cea2a862458530f71c171723f, type: 2}
   particleSize: 0.1
-  fluidColor: {r: 0.2, g: 0.5, b: 0.95, a: 1}
+  fluidColor: {r: 0.25, g: 0.55, b: 0.95, a: 1}
 --- !u!4 &511472010
 Transform:
   m_ObjectHideFlags: 0
@@ -327,6 +330,8 @@ MonoBehaviour:
   maxRadius: 5
   minGravity: 0
   maxGravity: 20
+  minParticlesPerAxis: 10
+  maxParticlesPerAxis: 60
 --- !u!1 &1436217322
 GameObject:
   m_ObjectHideFlags: 0

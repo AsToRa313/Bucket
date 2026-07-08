@@ -1,11 +1,8 @@
 using UnityEngine;
 using System.Collections.Generic;
-using Seb.Helpers;   // نظام Sebastian: SpatialHash
+using Seb.Helpers;   
 
-/// <summary>
-/// مدير محاكاة سوائل على GPU بصيغة Clavet مع نظام ترتيب مكاني (Seb Lague).
-/// تم تحديثه ليدعم ثقوب تفريغ بأشكال هندسية متعددة (دوائر ومستطيلات).
-/// </summary>
+
 public class SPHSimulation1 : MonoBehaviour
 {
     [Header("Compute Shader")]

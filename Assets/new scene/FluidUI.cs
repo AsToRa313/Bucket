@@ -1,9 +1,5 @@
 using UnityEngine;
 using UnityEngine.UI;
-
-/// <summary>
-/// واجهة تحكم بالسائل: أزرار (دفع/جذب/Reset) + منزلقات (قوة/نصف قطر/جاذبية/نوع السائل/العدد).
-/// </summary>
 public class FluidUI : MonoBehaviour
 {
     [Header("المرجع")]
